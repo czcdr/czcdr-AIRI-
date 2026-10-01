@@ -1,0 +1,82 @@
+/**
+ * Opacity “lamp flicker” for offline / warning icons.
+ * Loaded via @proj-airi/ui/main.css (import from app `styles/main.css`).
+ */
+@keyframes lamp-flicker-keyframes {
+  0%,
+  6%,
+  22%,
+  33%,
+  52%,
+  68%,
+  86%,
+  100% {
+    opacity: 1;
+  }
+
+  3% {
+    opacity: 0.74;
+  }
+
+  9% {
+    opacity: 0.92;
+  }
+
+  13% {
+    opacity: 0.38;
+  }
+
+  18% {
+    opacity: 0.58;
+  }
+
+  27% {
+    opacity: 0.44;
+  }
+
+  29% {
+    opacity: 0.84;
+  }
+
+  41% {
+    opacity: 0.42;
+  }
+
+  45% {
+    opacity: 0.88;
+  }
+
+  57% {
+    opacity: 0.62;
+  }
+
+  61% {
+    opacity: 0.8;
+  }
+
+  73% {
+    opacity: 0.36;
+  }
+
+  74.4% {
+    opacity: 0.08;
+  }
+
+  75.2% {
+    opacity: 0.82;
+  }
+
+  78% {
+    opacity: 0.94;
+  }
+
+  91% {
+    opacity: 0.52;
+  }
+}
+
+.lamp-flicker-animation {
+  animation: lamp-flicker-keyframes 6.4s ease-in-out infinite;
+  filter: drop-shadow(0 0 0.14rem rgb(251 191 36 / 0.18));
+  will-change: opacity;
+}

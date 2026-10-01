@@ -1,0 +1,1400 @@
+import type { GenerationProvider } from '@proj-airi/provider-inference'
+import type { Message } from '@xsai/shared-chat'
+
+import type { Conversation } from '../messages/types'
+import type { ChatHistoryItem, ContextMessage, StreamingAssistantMessage } from '../types/chat'
+import type { StreamEvent, StreamOptions } from '../types/llm'
+
+import { ContextUpdateStrategy } from '@proj-airi/server-shared/types'
+import { describe, expect, it, vi } from 'vitest'
+
+import { chatMessagesToTurns, conversationToChatMessages } from '../messages/chat-completions'
+import { createChatOrchestratorRuntime } from './chat-orchestrator-runtime'
+import { streamFrom } from './llm-service'
+
+const provider: GenerationProvider = {
+  generation: model => ({ protocol: 'chat-completions', config: { model, baseURL: 'https://example.com/' } }),
+}
+
+function createHarness(getActiveProvider = () => 'mock-provider') {
+  const sessionMessages: Record<string, ChatHistoryItem[]> = {
+    'session-1': [
+      {
+        role: 'system',
+        content: 'system prompt',
+        createdAt: new Date(2026, 3, 25, 18, 0).getTime(),
+        id: 'system',
+      },
+    ],
+  }
+  const contextSnapshot: Record<string, ContextMessage[]> = {}
+  const foregroundPatches: StreamingAssistantMessage[] = []
+  const foregroundResets: StreamingAssistantMessage[] = []
+  const lifecycleRecords: unknown[] = []
+  const promptProjections: unknown[] = []
+  const userAppended: unknown[] = []
+  const assistantAppended: unknown[] = []
+  const userTurns: unknown[] = []
+  const assistantTurns: unknown[] = []
+  const stateChanges: unknown[] = []
+  const telemetry = {
+    chatActivationStarted: [] as unknown[],
+    chatActivationSucceeded: [] as unknown[],
+    chatActivationFailed: [] as unknown[],
+    messageSendStarted: [] as unknown[],
+    llmRequestStarted: [] as unknown[],
+    llmFirstToken: [] as unknown[],
+    assistantResponseRendered: [] as unknown[],
+    llmGeneration: [] as unknown[],
+    messageRound: [] as unknown[],
+    messageRoundFailed: [] as unknown[],
+  }
+  const stream = vi.fn(async (_model: string, _chatProvider: GenerationProvider, _messages: Conversation, options?: StreamOptions) => {
+    await options?.onStreamEvent?.({ type: 'text-delta', text: 'assistant reply' })
+    await options?.onStreamEvent?.({ type: 'finish' })
+  })
+  const ids = ['stream-context', 'assistant-id', 'user-id', 'fallback-id']
+  let systemPromptSupplement: string | undefined
+  let nowValue = new Date(2026, 3, 25, 18, 47).getTime()
+  let monotonicNowValues = [1000]
+  let generation = 1
+  let assistantResponseRenderedError: Error | undefined
+
+  const runtime = createChatOrchestratorRuntime({
+    session: {
+      ensureSession: (sessionId) => {
+        sessionMessages[sessionId] ??= []
+      },
+      getSessionMessages: sessionId => sessionMessages[sessionId] ?? [],
+      appendSessionMessage: (sessionId, message) => {
+        sessionMessages[sessionId] ??= []
+        sessionMessages[sessionId].push(message)
+      },
+      getSessionGeneration: () => generation,
+    },
+    context: {
+      ingest: vi.fn(),
+      snapshot: () => structuredClone(contextSnapshot),
+    },
+    foregroundStream: {
+      patch: message => foregroundPatches.push(message),
+      reset: () => foregroundResets.push({ role: 'assistant', content: '', slices: [], tool_results: [] }),
+    },
+    llm: {
+      stream,
+    },
+    getActiveSessionId: () => 'session-1',
+    getActiveProvider,
+    getSystemPromptSupplement: () => systemPromptSupplement,
+    now: () => nowValue,
+    monotonicNow: () => monotonicNowValues.shift() ?? 1000,
+    createId: () => ids.shift() ?? 'generated-id',
+    onLifecycle: record => lifecycleRecords.push(record),
+    onPromptProjection: payload => promptProjections.push(payload),
+    onUserMessageAppended: event => userAppended.push(event),
+    onAssistantMessageAppended: event => assistantAppended.push(event),
+    onUserTurnReady: event => userTurns.push(event),
+    onAssistantTurnReady: event => assistantTurns.push(event),
+    onStateChange: state => stateChanges.push(state),
+    onChatActivationStarted: event => telemetry.chatActivationStarted.push(event),
+    onChatActivationSucceeded: event => telemetry.chatActivationSucceeded.push(event),
+    onChatActivationFailed: event => telemetry.chatActivationFailed.push(event),
+    onMessageSendStarted: event => telemetry.messageSendStarted.push(event),
+    onLlmRequestStarted: event => telemetry.llmRequestStarted.push(event),
+    onLlmFirstToken: event => telemetry.llmFirstToken.push(event),
+    onAssistantResponseRendered: (event) => {
+      if (assistantResponseRenderedError)
+        throw assistantResponseRenderedError
+      telemetry.assistantResponseRendered.push(event)
+    },
+    onLlmGeneration: event => telemetry.llmGeneration.push(event),
+    onMessageRound: event => telemetry.messageRound.push(event),
+    onMessageRoundFailed: event => telemetry.messageRoundFailed.push(event),
+  })
+
+  return {
+    assistantAppended,
+    assistantResponseRenderedError: {
+      set: (error: Error | undefined) => {
+        assistantResponseRenderedError = error
+      },
+    },
+    assistantTurns,
+    contextSnapshot,
+    foregroundPatches,
+    foregroundResets,
+    generation: {
+      set: (next: number) => {
+        generation = next
+      },
+    },
+    lifecycleRecords,
+    now: {
+      set: (next: number) => {
+        nowValue = next
+      },
+    },
+    monotonicNow: {
+      set: (next: number[]) => {
+        monotonicNowValues = [...next]
+      },
+    },
+    promptProjections,
+    runtime,
+    sessionMessages,
+    stateChanges,
+    stream,
+    systemPromptSupplement: {
+      set: (next: string | undefined) => {
+        systemPromptSupplement = next
+      },
+    },
+    telemetry,
+    userAppended,
+    userTurns,
+  }
+}
+
+describe('createChatOrchestratorRuntime', () => {
+  // ROOT CAUSE:
+  //
+  // The marker parser buffered 24 literal characters plus its marker-safety tail.
+  // Providers that emitted small, slow deltas therefore showed no visible text for several seconds.
+  //
+  // We fixed this by keeping only the marker-safety tail before the first foreground update.
+  it('updates the foreground stream before a slow response reaches 24 characters', async () => {
+    const harness = createHarness()
+    let patchesBeforeFinish = 0
+
+    harness.stream.mockImplementationOnce(async (_model, _chatProvider, _messages, options) => {
+      for (const text of '1234567890')
+        await options?.onStreamEvent?.({ type: 'text-delta', text })
+
+      patchesBeforeFinish = harness.foregroundPatches.length
+      await options?.onStreamEvent?.({ type: 'finish' })
+    })
+
+    await harness.runtime.ingest('show a slow response', {
+      model: 'gpt-test',
+      chatProvider: provider,
+    })
+
+    expect(patchesBeforeFinish).toBeGreaterThan(1)
+    expect(harness.foregroundPatches.some(message => message.content === '1234')).toBe(true)
+  })
+
+  // ROOT CAUSE:
+  //
+  // A transport failure cleared the foreground stream before the assistant
+  // message was stored. Text that was already visible therefore disappeared.
+  //
+  // We preserve received output as an incomplete local assistant message. The
+  // caller still receives the failure and can append its normal error item.
+  it('stores visible assistant output when the stream fails', async () => {
+    const harness = createHarness()
+    harness.stream.mockImplementationOnce(async (_model, _chatProvider, _messages, options) => {
+      await options?.onStreamEvent?.({ type: 'text-delta', text: 'partial reply' })
+      throw new Error('stream interrupted')
+    })
+
+    await expect(harness.runtime.ingest('show partial output', {
+      model: 'gpt-test',
+      chatProvider: provider,
+    })).rejects.toThrow('stream interrupted')
+
+    expect(harness.sessionMessages['session-1']?.at(-1)).toMatchObject({
+      role: 'assistant',
+      interrupted: true,
+      content: 'partial ',
+      slices: [{ type: 'text', text: 'partial ' }],
+    })
+    expect(harness.assistantAppended).toHaveLength(0)
+    expect(harness.foregroundResets).toHaveLength(1)
+  })
+
+  it('does not store a search-only status when the stream fails', async () => {
+    const harness = createHarness()
+    harness.stream.mockImplementationOnce(async (_model, _chatProvider, _messages, options) => {
+      await options?.onStreamEvent?.({ type: 'search', id: 'search-1', status: 'searching' })
+      throw new Error('search interrupted')
+    })
+
+    await expect(harness.runtime.ingest('search for this', {
+      model: 'gpt-test',
+      chatProvider: provider,
+    })).rejects.toThrow('search interrupted')
+
+    expect(harness.sessionMessages['session-1']?.filter(message => message.role === 'assistant')).toHaveLength(0)
+    expect(harness.foregroundResets).toHaveLength(1)
+  })
+
+  // ROOT CAUSE:
+  //
+  // The rendered-response observer ran after the provider completed but before
+  // history storage. If that observer threw, the complete reply was persisted
+  // as interrupted and activation was reported as failed.
+  it('keeps a completed response successful when its observer throws', async () => {
+    const harness = createHarness()
+    harness.assistantResponseRenderedError.set(new Error('analytics unavailable'))
+
+    await expect(harness.runtime.ingest('hello', {
+      model: 'gpt-test',
+      chatProvider: provider,
+    })).resolves.toBeUndefined()
+
+    expect(harness.sessionMessages['session-1']?.at(-1)).toMatchObject({
+      role: 'assistant',
+      content: 'assistant reply',
+    })
+    expect(harness.sessionMessages['session-1']?.at(-1)).not.toHaveProperty('interrupted')
+    expect(harness.telemetry.chatActivationSucceeded).toHaveLength(1)
+    expect(harness.telemetry.chatActivationFailed).toHaveLength(0)
+  })
+
+  it('stores tool names with the user message and omits them from provider messages', async () => {
+    const harness = createHarness()
+
+    await harness.runtime.ingest('use a widget', {
+      model: 'gpt-test',
+      chatProvider: provider,
+      toolReferences: [{ name: 'stage_widgets' }],
+    })
+
+    const storedUserMessage = harness.sessionMessages['session-1']?.find(message => message.role === 'user')
+    const providerMessages = conversationToChatMessages(harness.stream.mock.calls[0]![2])
+    const providerUserMessage = providerMessages.find(message => message.role === 'user')
+
+    expect(storedUserMessage).toMatchObject({
+      role: 'user',
+      tools: [{ name: 'stage_widgets' }],
+    })
+    expect(providerUserMessage).not.toHaveProperty('tools')
+  })
+
+  // ROOT CAUSE:
+  //
+  // The composer encoded a reply as localized Markdown inside the user text.
+  // The stored message therefore lost the relation to the replied message.
+  //
+  // We fixed this by storing the reply message id and projecting its text only
+  // for the provider request.
+  it('stores a native reply relation without changing the user text', async () => {
+    const harness = createHarness()
+    harness.sessionMessages['session-1']?.push({
+      role: 'assistant',
+      content: 'Earlier answer',
+      slices: [{ type: 'text', text: 'Earlier answer' }],
+      tool_results: [],
+      id: 'assistant-earlier',
+    })
+
+    await harness.runtime.ingest('My follow-up', {
+      model: 'gpt-test',
+      chatProvider: provider,
+      replyToMessageId: 'assistant-earlier',
+    })
+
+    const storedUserMessage = harness.sessionMessages['session-1']?.find(message => message.id === 'user-id')
+    const providerMessages = conversationToChatMessages(harness.stream.mock.calls[0]![2])
+    const providerUserMessage = providerMessages?.at(-1)
+
+    expect(storedUserMessage).toMatchObject({
+      role: 'user',
+      content: 'My follow-up',
+      replyToMessageId: 'assistant-earlier',
+    })
+    expect(providerUserMessage).toMatchObject({
+      role: 'user',
+      content: '[2026-04-25 18:47] [Replying to: Earlier answer]\nMy follow-up',
+    })
+    expect(providerUserMessage).not.toHaveProperty('replyToMessageId')
+  })
+
+  it('limits repeated reply text in the provider prompt', async () => {
+    const harness = createHarness()
+    harness.sessionMessages['session-1']?.push({
+      role: 'assistant',
+      content: 'a'.repeat(600),
+      slices: [{ type: 'text', text: 'a'.repeat(600) }],
+      tool_results: [],
+      id: 'assistant-long-reply',
+    })
+
+    await harness.runtime.ingest('My follow-up', {
+      model: 'gpt-test',
+      chatProvider: provider,
+      replyToMessageId: 'assistant-long-reply',
+    })
+
+    const providerMessages = conversationToChatMessages(harness.stream.mock.calls[0]![2])
+    const providerUserMessage = providerMessages?.at(-1)
+
+    expect(providerUserMessage).toMatchObject({
+      role: 'user',
+      content: `[2026-04-25 18:47] [Replying to: ${'a'.repeat(479)}…]\nMy follow-up`,
+    })
+  })
+
+  // ROOT CAUSE:
+  //
+  // xsAI kept the assistant tool call and tool result in its private message copy.
+  // AIRI stored only UI slices, then removed those slices from the next provider request.
+  //
+  // We fixed this by storing the provider generated turn on the finalized UI message.
+  // The next request expands that generated turn back into chronological provider messages.
+  it('includes completed tool rounds in the next provider request', async () => {
+    const harness = createHarness()
+
+    harness.stream.mockImplementationOnce(async (_model, _chatProvider, messages, options) => {
+      await options?.onStreamEvent?.({
+        type: 'tool-call',
+        toolCallId: 'call-weather',
+        toolName: 'weather',
+        args: '{}',
+      } as StreamEvent)
+      await options?.onStreamEvent?.({
+        type: 'tool-result',
+        toolCallId: 'call-weather',
+        result: 'sunny',
+      } as StreamEvent)
+      await options?.onStreamEvent?.({ type: 'text-delta', text: 'The weather is sunny.' })
+
+      const [turn] = chatMessagesToTurns([
+        {
+          role: 'assistant',
+          content: '',
+          tool_calls: [
+            {
+              id: 'call-weather',
+              type: 'function',
+              function: {
+                name: 'weather',
+                arguments: '{}',
+              },
+            },
+          ],
+        },
+        {
+          role: 'tool',
+          tool_call_id: 'call-weather',
+          content: 'sunny',
+        },
+        {
+          role: 'assistant',
+          content: 'The weather is sunny.',
+        },
+      ])
+      if (turn.type !== 'assistant')
+        throw new Error('Expected assistant turn')
+      await options?.onGeneratedTurn?.(turn)
+    })
+
+    await harness.runtime.ingest('What is the weather?', {
+      model: 'gpt-test',
+      chatProvider: provider,
+    })
+    await harness.runtime.ingest('Can you repeat that?', {
+      model: 'gpt-test',
+      chatProvider: provider,
+    })
+
+    const messages = conversationToChatMessages(harness.stream.mock.calls[1][2])
+
+    expect(messages?.map(message => message.role)).toEqual([
+      'system',
+      'user',
+      'assistant',
+      'tool',
+      'assistant',
+      'user',
+    ])
+    expect(messages?.[2]).toMatchObject({
+      role: 'assistant',
+      tool_calls: [
+        {
+          id: 'call-weather',
+          type: 'function',
+          function: {
+            name: 'weather',
+            arguments: '{}',
+          },
+        },
+      ],
+    })
+    expect(messages?.[3]).toEqual({
+      role: 'tool',
+      tool_call_id: 'call-weather',
+      content: 'sunny',
+    })
+    expect(messages?.[4]).toEqual({
+      role: 'assistant',
+      content: 'The weather is sunny.',
+    })
+  })
+
+  it('keeps hook order and appends context prompt to the latest user message', async () => {
+    const harness = createHarness()
+    harness.contextSnapshot['system:weather'] = [
+      {
+        id: 'weather',
+        contextId: 'system:weather',
+        strategy: ContextUpdateStrategy.ReplaceSelf,
+        text: 'sunny',
+        createdAt: 1,
+      },
+    ]
+    const hookOrder: string[] = []
+    let composedMessages: Message[] = []
+
+    harness.runtime.hooks.onBeforeMessageComposed(async () => {
+      hookOrder.push('before-compose')
+    })
+    harness.runtime.hooks.onAfterMessageComposed(async () => {
+      hookOrder.push('after-compose')
+    })
+    harness.runtime.hooks.onBeforeSend(async () => {
+      hookOrder.push('before-send')
+    })
+    harness.runtime.hooks.onTokenLiteral(async () => {
+      hookOrder.push('token-literal')
+    })
+    harness.runtime.hooks.onStreamEnd(async () => {
+      hookOrder.push('stream-end')
+    })
+    harness.runtime.hooks.onAssistantResponseEnd(async () => {
+      hookOrder.push('assistant-end')
+    })
+    harness.runtime.hooks.onAfterSend(async () => {
+      hookOrder.push('after-send')
+    })
+    harness.runtime.hooks.onAssistantMessage(async () => {
+      hookOrder.push('assistant-message')
+    })
+    harness.runtime.hooks.onChatTurnComplete(async () => {
+      hookOrder.push('turn-complete')
+    })
+    harness.stream.mockImplementationOnce(async (_model, _chatProvider, messages, options) => {
+      composedMessages = conversationToChatMessages(messages)
+      await options?.onStreamEvent?.({ type: 'text-delta', text: 'hello' })
+      await options?.onStreamEvent?.({ type: 'finish' })
+    })
+
+    await harness.runtime.ingest('hello from user', {
+      model: 'gpt-test',
+      chatProvider: provider,
+    })
+
+    expect(hookOrder).toEqual([
+      'before-compose',
+      'after-compose',
+      'before-send',
+      'token-literal',
+      'stream-end',
+      'assistant-end',
+      'after-send',
+      'assistant-message',
+      'turn-complete',
+    ])
+    expect(composedMessages).toHaveLength(2)
+    expect(composedMessages[0]).toMatchObject({ role: 'system', content: 'system prompt' })
+    expect(composedMessages[1]).toMatchObject({ role: 'user' })
+    expect(composedMessages[1]?.content).toBe('[2026-04-25 18:47] hello from user\n[Context]\n- system:weather: sunny')
+    expect(harness.lifecycleRecords).toEqual(expect.arrayContaining([
+      expect.objectContaining({ phase: 'before-compose' }),
+      expect.objectContaining({ phase: 'prompt-context-built' }),
+      expect.objectContaining({ phase: 'after-compose' }),
+    ]))
+    expect(harness.promptProjections).toHaveLength(1)
+  })
+
+  // ROOT CAUSE:
+  //
+  // Speech-muted consumers dispatch plugin CALL markers without a TTS
+  // session. If the hook context has no turn id, a locally unhandled call
+  // cannot be correlated and relayed to another Electron renderer.
+  it('preserves the round turn id on special-token hooks', async () => {
+    const harness = createHarness()
+    let specialTurnId = ''
+
+    harness.runtime.hooks.onTokenSpecial(async (_special, context) => {
+      specialTurnId = context.turnId
+    })
+    harness.stream.mockImplementationOnce(async (_model, _chatProvider, _messages, options) => {
+      await options?.onStreamEvent?.({ type: 'text-delta', text: '<|CALL ["plugin.action"]|>' })
+      await options?.onStreamEvent?.({ type: 'finish' })
+    })
+
+    await harness.runtime.ingest('trigger special', {
+      model: 'gpt-test',
+      chatProvider: provider,
+    })
+
+    expect(specialTurnId).toBe('user-id')
+    expect(harness.telemetry.messageSendStarted).toEqual([
+      expect.objectContaining({ roundId: specialTurnId }),
+    ])
+  })
+
+  it('keeps timestamp prefixes stable for legacy user messages without createdAt', async () => {
+    const harness = createHarness()
+    const legacyUserMessage: ChatHistoryItem = {
+      role: 'user' as const,
+      content: 'legacy prompt',
+      id: 'legacy-user',
+    }
+    harness.sessionMessages['session-1'] = [
+      { role: 'system', content: 'system prompt', createdAt: 1, id: 'system' },
+      legacyUserMessage,
+    ]
+    const firstMessages: Message[][] = []
+    const secondMessages: Message[][] = []
+
+    harness.stream.mockImplementationOnce(async (_model, _chatProvider, messages, options) => {
+      firstMessages.push(conversationToChatMessages(messages))
+      await options?.onStreamEvent?.({ type: 'finish' })
+    })
+    harness.now.set(new Date(2026, 3, 25, 18, 47).getTime())
+
+    await harness.runtime.ingest('first send', {
+      model: 'gpt-test',
+      chatProvider: provider,
+    })
+
+    harness.stream.mockImplementationOnce(async (_model, _chatProvider, messages, options) => {
+      secondMessages.push(conversationToChatMessages(messages))
+      await options?.onStreamEvent?.({ type: 'finish' })
+    })
+    harness.now.set(new Date(2026, 3, 25, 19, 12).getTime())
+
+    await harness.runtime.ingest('second send', {
+      model: 'gpt-test',
+      chatProvider: provider,
+    })
+
+    expect(firstMessages[0]?.[1]?.content).toBe('[2026-04-25 18:47] legacy prompt')
+    expect(secondMessages[0]?.[1]?.content).toBe('[2026-04-25 18:47] legacy prompt')
+    expect(legacyUserMessage.createdAt).toBe(new Date(2026, 3, 25, 18, 47).getTime())
+  })
+
+  it('appends system prompt supplement to the provider system message', async () => {
+    const harness = createHarness()
+    let composedMessages: Message[] = []
+    harness.systemPromptSupplement.set('Plugin toolset guidance.')
+    harness.stream.mockImplementationOnce(async (_model, _chatProvider, messages, options) => {
+      composedMessages = conversationToChatMessages(messages)
+      await options?.onStreamEvent?.({ type: 'text-delta', text: 'hello' })
+      await options?.onStreamEvent?.({ type: 'finish' })
+    })
+
+    await harness.runtime.ingest('hello from user', {
+      model: 'gpt-test',
+      chatProvider: provider,
+    })
+
+    expect(composedMessages[0]).toMatchObject({
+      role: 'system',
+      content: 'system prompt\n\nPlugin toolset guidance.',
+    })
+  })
+
+  it('creates a system message when only a system prompt supplement is available', async () => {
+    const harness = createHarness()
+    let composedMessages: Message[] = []
+    harness.sessionMessages['session-1'] = []
+    harness.systemPromptSupplement.set('Plugin toolset guidance.')
+    harness.stream.mockImplementationOnce(async (_model, _chatProvider, messages, options) => {
+      composedMessages = conversationToChatMessages(messages)
+      await options?.onStreamEvent?.({ type: 'text-delta', text: 'hello' })
+      await options?.onStreamEvent?.({ type: 'finish' })
+    })
+
+    await harness.runtime.ingest('hello from user', {
+      model: 'gpt-test',
+      chatProvider: provider,
+    })
+
+    expect(composedMessages[0]).toMatchObject({
+      role: 'system',
+      content: 'Plugin toolset guidance.',
+    })
+    expect(composedMessages[1]).toMatchObject({ role: 'user' })
+  })
+
+  it('emits telemetry milestones for a successful voice-backed message round', async () => {
+    const harness = createHarness()
+    harness.monotonicNow.set([100, 150, 250, 400, 460])
+    harness.stream.mockImplementationOnce(async (_model, _chatProvider, _messages, options) => {
+      await options?.onStreamEvent?.({ type: 'text-delta', text: 'assistant reply' })
+      await options?.onStreamEvent?.({ type: 'finish' })
+      await options?.onUsage?.({
+        inputTokens: 12,
+        outputTokens: 8,
+        totalTokens: 20,
+        source: 'reported',
+      })
+    })
+
+    await harness.runtime.ingest('hello from voice', {
+      model: 'gpt-test',
+      chatProvider: provider,
+      input: {
+        type: 'input:text:voice',
+        data: {
+          transcription: 'hello from voice',
+        },
+      },
+    })
+
+    expect(harness.telemetry.messageSendStarted).toEqual([{
+      conversationId: 'session-1',
+      roundId: 'user-id',
+      source: 'voice',
+      model: 'gpt-test',
+      turnIndex: 1,
+    }])
+    expect(harness.telemetry.llmRequestStarted).toEqual([{
+      conversationId: 'session-1',
+      roundId: 'user-id',
+      model: 'gpt-test',
+      provider: 'mock-provider',
+      hasVoice: true,
+      turnIndex: 1,
+    }])
+    expect(harness.telemetry.llmFirstToken).toEqual([{
+      conversationId: 'session-1',
+      roundId: 'user-id',
+      model: 'gpt-test',
+      ttfbMs: 100,
+      turnIndex: 1,
+    }])
+    expect(harness.telemetry.assistantResponseRendered).toEqual([{
+      conversationId: 'session-1',
+      roundId: 'user-id',
+      model: 'gpt-test',
+      latencyMs: 250,
+      turnIndex: 1,
+    }])
+    expect(harness.telemetry.llmGeneration).toEqual([{
+      conversationId: 'session-1',
+      roundId: 'user-id',
+      model: 'gpt-test',
+      provider: 'mock-provider',
+      inputTokens: 12,
+      outputTokens: 8,
+      totalTokens: 20,
+      usageSource: 'reported',
+      turnIndex: 1,
+    }])
+    expect(harness.telemetry.messageRound).toEqual([{
+      conversationId: 'session-1',
+      roundId: 'user-id',
+      durationMs: 360,
+      hasVoice: true,
+      inputTokens: 12,
+      model: 'gpt-test',
+      outputTokens: 8,
+      totalTokens: 20,
+      turnIndex: 1,
+      usageSource: 'reported',
+    }])
+    expect(harness.telemetry.chatActivationStarted).toEqual([{
+      conversationId: 'session-1',
+      model: 'gpt-test',
+      provider: 'mock-provider',
+      roundId: 'user-id',
+      source: 'voice',
+      turnIndex: 1,
+    }])
+    expect(harness.telemetry.chatActivationSucceeded).toEqual([{
+      conversationId: 'session-1',
+      durationMs: 360,
+      model: 'gpt-test',
+      provider: 'mock-provider',
+      roundId: 'user-id',
+      source: 'voice',
+      turnIndex: 1,
+    }])
+    expect(harness.telemetry.chatActivationFailed).toEqual([])
+  })
+
+  // Review: https://github.com/moeru-ai/airi/pull/2325
+  it('pr #2325 treats input:text metadata as text telemetry', async () => {
+    const harness = createHarness()
+
+    await harness.runtime.ingest('hello from text input', {
+      model: 'gpt-test',
+      chatProvider: provider,
+      input: {
+        type: 'input:text',
+        data: {
+          text: 'hello from text input',
+        },
+      },
+    })
+
+    expect(harness.telemetry.messageSendStarted).toEqual([
+      expect.objectContaining({ source: 'text' }),
+    ])
+    expect(harness.telemetry.llmRequestStarted).toEqual([
+      expect.objectContaining({ hasVoice: false }),
+    ])
+    expect(harness.telemetry.messageRound).toEqual([
+      expect.objectContaining({ hasVoice: false }),
+    ])
+    expect(harness.userAppended).toEqual([
+      expect.objectContaining({ source: 'text' }),
+    ])
+  })
+
+  // ROOT CAUSE:
+  //
+  // Activation callbacks were emitted for every chat round, so production
+  // `chat_activation_*` volume tracked message traffic instead of the first
+  // successful assistant response in a conversation.
+  it('emits activation milestones only until the conversation gets its first assistant response', async () => {
+    const harness = createHarness()
+
+    await harness.runtime.ingest('first turn', {
+      model: 'gpt-test',
+      chatProvider: provider,
+    })
+    await harness.runtime.ingest('second turn', {
+      model: 'gpt-test',
+      chatProvider: provider,
+    })
+
+    expect(harness.telemetry.chatActivationStarted).toHaveLength(1)
+    expect(harness.telemetry.chatActivationSucceeded).toHaveLength(1)
+    expect(harness.telemetry.chatActivationFailed).toHaveLength(0)
+    expect(harness.telemetry.messageSendStarted).toHaveLength(2)
+    expect(harness.telemetry.messageRound).toHaveLength(2)
+  })
+
+  // ROOT CAUSE:
+  //
+  // Preserving partial output created an assistant history item, so the next
+  // send looked like a later turn even though activation had never succeeded.
+  // Interrupted output is now marked separately from a completed assistant.
+  it('keeps activation eligible after the first response is interrupted', async () => {
+    const harness = createHarness()
+    harness.stream.mockImplementationOnce(async (_model, _chatProvider, _messages, options) => {
+      await options?.onStreamEvent?.({ type: 'text-delta', text: 'partial reply' })
+      throw new Error('stream interrupted')
+    })
+
+    await expect(harness.runtime.ingest('first turn fails', {
+      model: 'gpt-test',
+      chatProvider: provider,
+    })).rejects.toThrow('stream interrupted')
+    await harness.runtime.ingest('second turn succeeds', {
+      model: 'gpt-test',
+      chatProvider: provider,
+    })
+
+    expect(harness.telemetry.chatActivationStarted).toHaveLength(2)
+    expect(harness.telemetry.chatActivationFailed).toHaveLength(1)
+    expect(harness.telemetry.chatActivationSucceeded).toHaveLength(1)
+  })
+
+  it('emits chat activation failure telemetry without raw provider messages', async () => {
+    const harness = createHarness()
+    harness.stream.mockRejectedValueOnce(new Error('provider rejected with sensitive details'))
+
+    await expect(harness.runtime.ingest('hello', {
+      model: 'gpt-test',
+      chatProvider: provider,
+    })).rejects.toThrow('provider rejected')
+
+    expect(harness.telemetry.chatActivationStarted).toEqual([{
+      conversationId: 'session-1',
+      model: 'gpt-test',
+      provider: 'mock-provider',
+      roundId: 'user-id',
+      source: 'text',
+      turnIndex: 1,
+    }])
+    expect(harness.telemetry.chatActivationSucceeded).toEqual([])
+    expect(harness.telemetry.chatActivationFailed).toEqual([{
+      conversationId: 'session-1',
+      errorCode: 'llm_response_failed',
+      failureStage: 'llm_response',
+      model: 'gpt-test',
+      provider: 'mock-provider',
+      roundId: 'user-id',
+      source: 'text',
+      turnIndex: 1,
+    }])
+    expect(harness.telemetry.messageRoundFailed).toEqual([{
+      conversationId: 'session-1',
+      errorCode: 'llm_response_failed',
+      failureStage: 'llm_response',
+      model: 'gpt-test',
+      provider: 'mock-provider',
+      roundId: 'user-id',
+      source: 'text',
+      turnIndex: 1,
+    }])
+  })
+
+  it('emits a round failure for later turns without repeating activation failure', async () => {
+    const harness = createHarness()
+
+    await harness.runtime.ingest('first turn succeeds', {
+      model: 'gpt-test',
+      chatProvider: provider,
+    })
+    harness.stream.mockRejectedValueOnce(new Error('later turn rejected'))
+
+    await expect(harness.runtime.ingest('second turn fails', {
+      model: 'gpt-test',
+      chatProvider: provider,
+    })).rejects.toThrow('later turn rejected')
+
+    expect(harness.telemetry.chatActivationFailed).toEqual([])
+    expect(harness.telemetry.messageRoundFailed).toEqual([
+      expect.objectContaining({
+        conversationId: 'session-1',
+        errorCode: 'llm_response_failed',
+        failureStage: 'llm_response',
+        roundId: expect.any(String),
+        turnIndex: 2,
+      }),
+    ])
+  })
+
+  // https://github.com/moeru-ai/airi/pull/2477#discussion_r4000149090
+  // ROOT CAUSE:
+  //
+  // The queue retained the provider client but read the active provider ID at execution time.
+  // A settings change could pair that client with another provider scope. Capture both at enqueue.
+  it('keeps the provider identity captured before a queued send starts (PR #2477)', async () => {
+    let providerId = 'original'
+    const harness = createHarness(() => providerId)
+    let release: (() => void) | undefined
+    harness.stream.mockImplementationOnce(() => new Promise<void>((resolve) => {
+      release = resolve
+    }))
+    const first = harness.runtime.ingest('first', { model: 'same', chatProvider: provider })
+    await vi.waitFor(() => expect(harness.stream).toHaveBeenCalledTimes(1))
+    const second = harness.runtime.ingest('second', { model: 'same', chatProvider: provider })
+    providerId = 'changed'
+    release?.()
+    await Promise.all([first, second])
+    expect(harness.stream.mock.calls[1][3]?.providerId).toBe('original')
+  })
+
+  it('rejects cancelled queued sends before they start', async () => {
+    const harness = createHarness()
+    let releaseFirstSend: (() => void) | undefined
+    harness.stream.mockImplementationOnce(async () => {
+      await new Promise<void>((resolve) => {
+        releaseFirstSend = resolve
+      })
+    })
+
+    const firstSend = harness.runtime.ingest('hold queue', {
+      model: 'gpt-test',
+      chatProvider: provider,
+    })
+    const secondSend = harness.runtime.ingest('cancel me', {
+      model: 'gpt-test',
+      chatProvider: provider,
+    })
+
+    await vi.waitFor(() => {
+      expect(harness.stream).toHaveBeenCalledTimes(1)
+    })
+    await vi.waitFor(() => {
+      expect(harness.runtime.getPendingQueuedSendCount()).toBe(1)
+    })
+    harness.runtime.cancelPendingSends('session-1')
+    releaseFirstSend?.()
+
+    await expect(secondSend).rejects.toThrow('Chat session was reset before send could start')
+    await firstSend
+  })
+
+  // https://github.com/moeru-ai/airi/pull/2489#discussion_r3967818108
+  // ROOT CAUSE:
+  //
+  // A queued send kept the reply target captured by the composer. Deleting that
+  // target did not change the session generation, so the queued message stored a
+  // dangling relation and projected the missing id into the provider prompt.
+  //
+  // The send must revalidate the relation against current session history after
+  // asynchronous composition and immediately before append.
+  it('drops a queued reply relation when its target is deleted before append', async () => {
+    const harness = createHarness()
+    let queuedSendContext: ChatHistoryItem | undefined
+    let releaseQueuedComposition: (() => void) | undefined
+    harness.runtime.hooks.onBeforeMessageComposed(async (message, context) => {
+      if (message !== 'send without stale reply')
+        return
+
+      queuedSendContext = context.message
+      await new Promise<void>((resolve) => {
+        releaseQueuedComposition = resolve
+      })
+    })
+    harness.sessionMessages['session-1']?.push({
+      role: 'assistant',
+      content: 'Reply target',
+      slices: [{ type: 'text', text: 'Reply target' }],
+      tool_results: [],
+      id: 'deleted-reply-target',
+    })
+    let releaseFirstSend: (() => void) | undefined
+    harness.stream.mockImplementationOnce(async (_model, _chatProvider, _messages, options) => {
+      await new Promise<void>((resolve) => {
+        releaseFirstSend = resolve
+      })
+      await options?.onStreamEvent?.({ type: 'finish' })
+    })
+
+    const firstSend = harness.runtime.ingest('hold queue', {
+      model: 'gpt-test',
+      chatProvider: provider,
+    })
+    const queuedReply = harness.runtime.ingest('send without stale reply', {
+      model: 'gpt-test',
+      chatProvider: provider,
+      replyToMessageId: 'deleted-reply-target',
+    })
+
+    await vi.waitFor(() => {
+      expect(harness.stream).toHaveBeenCalledTimes(1)
+    })
+    await vi.waitFor(() => {
+      expect(harness.runtime.getPendingQueuedSendCount()).toBe(1)
+    })
+    releaseFirstSend?.()
+    await vi.waitFor(() => {
+      expect(releaseQueuedComposition).toBeTypeOf('function')
+    })
+
+    const sessionMessages = harness.sessionMessages['session-1']
+    if (!sessionMessages)
+      throw new Error('Expected the active test session to exist')
+
+    harness.sessionMessages['session-1'] = sessionMessages
+      .filter(message => message.id !== 'deleted-reply-target')
+    releaseQueuedComposition?.()
+
+    await firstSend
+    await queuedReply
+
+    const storedReply = harness.sessionMessages['session-1']
+      ?.find(message => message.role === 'user' && message.content === 'send without stale reply')
+    const providerUserMessage = conversationToChatMessages(harness.stream.mock.calls[1]![2]).at(-1)
+    const syncedUserMessage = (harness.userAppended.at(-1) as { message?: ChatHistoryItem } | undefined)?.message
+
+    expect(storedReply).toBeDefined()
+    expect(storedReply).not.toHaveProperty('replyToMessageId')
+    expect(providerUserMessage).toMatchObject({
+      role: 'user',
+      content: '[2026-04-25 18:47] send without stale reply',
+    })
+    expect(syncedUserMessage).toBeDefined()
+    expect(syncedUserMessage).not.toHaveProperty('replyToMessageId')
+    expect(queuedSendContext).toBeDefined()
+    expect(queuedSendContext).not.toHaveProperty('replyToMessageId')
+  })
+
+  // https://github.com/moeru-ai/airi/pull/2086#discussion_r3714754876
+  it('suppresses completion hooks when an active send session is deleted for Issue #2085', async () => {
+    // ROOT CAUSE:
+    //
+    // Generation checks protected message mutation during a stream, but the
+    // runtime still emitted completion hooks and success analytics after the
+    // provider returned for a deleted session.
+    const harness = createHarness()
+    const completionHook = vi.fn()
+    harness.runtime.hooks.onStreamEnd(completionHook)
+    harness.runtime.hooks.onAssistantResponseEnd(completionHook)
+    harness.runtime.hooks.onAfterSend(completionHook)
+    harness.runtime.hooks.onAssistantMessage(completionHook)
+    harness.runtime.hooks.onChatTurnComplete(completionHook)
+
+    let finishStream: (() => void) | undefined
+    harness.stream.mockImplementationOnce(async (_model, _chatProvider, _messages, options) => {
+      await new Promise<void>((resolve) => {
+        finishStream = resolve
+      })
+      options?.onUsage?.({
+        inputTokens: 1,
+        outputTokens: 1,
+        totalTokens: 2,
+        source: 'reported',
+      })
+      await options?.onStreamEvent?.({ type: 'text-delta', text: 'deleted reply' })
+      await options?.onStreamEvent?.({ type: 'finish' })
+    })
+
+    const pendingSend = harness.runtime.ingest('delete this chat', {
+      model: 'gpt-test',
+      chatProvider: provider,
+    })
+
+    await vi.waitFor(() => {
+      expect(harness.stream).toHaveBeenCalledTimes(1)
+    })
+    harness.generation.set(2)
+    finishStream?.()
+    await pendingSend
+
+    expect(completionHook).not.toHaveBeenCalled()
+    expect(harness.assistantAppended).toEqual([])
+    expect(harness.assistantTurns).toEqual([])
+    expect(harness.telemetry.assistantResponseRendered).toEqual([])
+    expect(harness.telemetry.llmGeneration).toEqual([])
+    expect(harness.telemetry.messageRound).toEqual([])
+    expect(harness.telemetry.chatActivationSucceeded).toEqual([])
+  })
+
+  it('rejects stale generation sends before they start', async () => {
+    const harness = createHarness()
+    let releaseFirstSend: (() => void) | undefined
+    harness.stream.mockImplementationOnce(async () => {
+      await new Promise<void>((resolve) => {
+        releaseFirstSend = resolve
+      })
+    })
+
+    const firstSend = harness.runtime.ingest('hold queue', {
+      model: 'gpt-test',
+      chatProvider: provider,
+    })
+    const secondSend = harness.runtime.ingest('stale request', {
+      model: 'gpt-test',
+      chatProvider: provider,
+    })
+
+    await vi.waitFor(() => {
+      expect(harness.stream).toHaveBeenCalledTimes(1)
+    })
+    await vi.waitFor(() => {
+      expect(harness.runtime.getPendingQueuedSendCount()).toBe(1)
+    })
+    harness.generation.set(2)
+    releaseFirstSend?.()
+
+    await firstSend
+    await expect(secondSend).rejects.toThrow('Chat session was reset before send could start')
+    expect(harness.stream).toHaveBeenCalledTimes(1)
+  })
+
+  it('keeps sending externally writable for UI facades', () => {
+    const harness = createHarness()
+
+    harness.runtime.setSending(true)
+    expect(harness.runtime.getSending()).toBe(true)
+    expect(harness.stateChanges.at(-1)).toEqual({
+      activeSendSessionId: 'session-1',
+      activeStreamingMessage: undefined,
+      sending: true,
+      pendingQueuedSendCount: 0,
+    })
+
+    harness.runtime.setSending(false)
+    expect(harness.runtime.getSending()).toBe(false)
+    expect(harness.stateChanges.at(-1)).toEqual({
+      activeSendSessionId: undefined,
+      activeStreamingMessage: undefined,
+      sending: false,
+      pendingQueuedSendCount: 0,
+    })
+  })
+
+  // https://github.com/moeru-ai/airi/issues/2085
+  it('reports the queued send target while a background session is sending for Issue #2085', async () => {
+    // ROOT CAUSE:
+    //
+    // Runtime state exposed only a global sending boolean. A window-level sync
+    // layer therefore had to infer the owner from the authority's visible
+    // session, which is wrong when a follower targets a background session.
+    const harness = createHarness()
+    let finishSend: (() => void) | undefined
+    harness.stream.mockImplementationOnce(async (_model, _chatProvider, _messages, options) => {
+      await options?.onStreamEvent?.({ type: 'text-delta', text: 'background reply' })
+      await new Promise<void>((resolve) => {
+        finishSend = resolve
+      })
+    })
+
+    const pendingSend = harness.runtime.ingest('background request', {
+      model: 'gpt-test',
+      chatProvider: provider,
+    }, 'session-2')
+
+    await vi.waitFor(() => {
+      expect(harness.stateChanges).toContainEqual(expect.objectContaining({
+        activeSendSessionId: 'session-2',
+        activeStreamingMessage: expect.objectContaining({
+          role: 'assistant',
+          createdAt: expect.any(Number),
+        }),
+        sending: true,
+        pendingQueuedSendCount: 0,
+      }))
+    })
+    await vi.waitFor(() => {
+      expect(harness.stream).toHaveBeenCalledTimes(1)
+    })
+    await vi.waitFor(() => {
+      expect(harness.stateChanges).toContainEqual(expect.objectContaining({
+        activeSendSessionId: 'session-2',
+        activeStreamingMessage: expect.objectContaining({ content: expect.stringContaining('background') }),
+      }))
+    })
+
+    finishSend?.()
+    await pendingSend
+
+    expect(harness.stateChanges.at(-1)).toEqual({
+      activeSendSessionId: undefined,
+      activeStreamingMessage: undefined,
+      sending: false,
+      pendingQueuedSendCount: 0,
+    })
+  })
+
+  it('returns pending queued send snapshots with public fields', async () => {
+    const harness = createHarness()
+    let releaseFirstSend: (() => void) | undefined
+    harness.stream.mockImplementationOnce(async () => {
+      await new Promise<void>((resolve) => {
+        releaseFirstSend = resolve
+      })
+    })
+
+    const queuedMessage = 'queued-message-'.repeat(12)
+    const firstSend = harness.runtime.ingest('hold queue', {
+      model: 'gpt-test',
+      chatProvider: provider,
+    })
+    const secondSend = harness.runtime.ingest(queuedMessage, {
+      model: 'gpt-test',
+      chatProvider: provider,
+      attachments: [
+        {
+          type: 'image',
+          data: 'aW1hZ2U=',
+          mimeType: 'image/png',
+        },
+      ],
+      input: {
+        type: 'input:text',
+        data: {
+          text: 'queued input',
+        },
+      },
+    })
+
+    await vi.waitFor(() => {
+      expect(harness.stream).toHaveBeenCalledTimes(1)
+    })
+    await vi.waitFor(() => {
+      expect(harness.runtime.getPendingQueuedSendCount()).toBe(1)
+    })
+
+    expect(harness.runtime.getPendingQueuedSendSnapshot()).toEqual([
+      {
+        sessionId: 'session-1',
+        generation: 1,
+        cancelled: false,
+        messagePreview: queuedMessage.slice(0, 120),
+        hasAttachments: true,
+        inputType: 'input:text',
+      },
+    ])
+
+    harness.runtime.cancelPendingSends('session-1')
+    releaseFirstSend?.()
+
+    await expect(secondSend).rejects.toThrow('Chat session was reset before send could start')
+    await firstSend
+  })
+
+  it('handles attachments, reasoning deltas, tool events, and assistant finalization', async () => {
+    const harness = createHarness()
+    let composedMessages: Message[] = []
+    harness.stream.mockImplementationOnce(async (_model, _chatProvider, messages, options) => {
+      composedMessages = conversationToChatMessages(messages)
+      await options?.onStreamEvent?.({ type: 'reasoning-delta', text: 'thinking' })
+      await options?.onStreamEvent?.({
+        type: 'tool-call',
+        toolCallId: 'tool-1',
+        toolName: 'weather',
+        args: {},
+      } as StreamEvent)
+      await options?.onStreamEvent?.({
+        type: 'tool-result',
+        toolCallId: 'tool-1',
+        result: 'sunny',
+      } as StreamEvent)
+      await options?.onStreamEvent?.({ type: 'text-delta', text: 'visible reply' })
+      await options?.onStreamEvent?.({ type: 'finish' })
+    })
+
+    await harness.runtime.ingest('see image', {
+      model: 'gpt-test',
+      chatProvider: provider,
+      attachments: [
+        {
+          type: 'image',
+          data: 'aW1hZ2U=',
+          mimeType: 'image/png',
+        },
+      ],
+    })
+
+    expect(composedMessages[1]?.content).toEqual([
+      {
+        type: 'text',
+        text: '[2026-04-25 18:47] see image',
+      },
+      {
+        type: 'image_url',
+        image_url: {
+          url: 'data:image/png;base64,aW1hZ2U=',
+        },
+      },
+    ])
+    const assistant = harness.sessionMessages['session-1']?.at(-1)
+    expect(assistant).toMatchObject({
+      role: 'assistant',
+      content: 'visible reply',
+      categorization: {
+        reasoning: 'thinking',
+      },
+    })
+    expect((assistant as StreamingAssistantMessage).slices).toEqual([
+      expect.objectContaining({
+        type: 'tool-call',
+        toolCall: expect.objectContaining({
+          toolCallId: 'tool-1',
+        }),
+      }),
+      {
+        type: 'text',
+        text: 'visible reply',
+      },
+    ])
+    expect((assistant as StreamingAssistantMessage).tool_results).toEqual([
+      {
+        type: 'tool-call-result',
+        id: 'tool-1',
+        result: 'sunny',
+      },
+    ])
+    expect(harness.assistantAppended).toHaveLength(1)
+    expect(harness.foregroundResets).toHaveLength(1)
+  })
+})
+
+describe('responses generated turn ownership', () => {
+  it('keeps portable history and opaque continuation together for the selected adapter', async () => {
+    const harness = createHarness()
+    const responsesProvider: GenerationProvider = {
+      generation: model => ({ protocol: 'responses', webSearch: false, config: { model, baseURL: 'https://example.com/' } }),
+    }
+    const [generatedTurn] = chatMessagesToTurns([{ role: 'assistant', content: 'answer' }])
+    if (generatedTurn.type !== 'assistant')
+      throw new Error('Expected assistant turn')
+    generatedTurn.rounds[0].continuation = { protocol: 'responses', scope: 'adapter-scope', data: [{ type: 'reasoning', summary: [], encrypted_content: 'opaque' }] }
+    harness.stream.mockImplementationOnce(async (_model, _provider, _context, options) => {
+      await options?.onGeneratedTurn?.(generatedTurn)
+      await options?.onStreamEvent?.({ type: 'text-delta', text: 'answer' })
+    })
+    await harness.runtime.ingest('first', { model: 'test', chatProvider: responsesProvider })
+    await harness.runtime.ingest('second', { model: 'test', chatProvider: responsesProvider })
+    expect(harness.stream.mock.calls[1][2].turns).toContainEqual(generatedTurn)
+    await harness.runtime.ingest('third', { model: 'test', chatProvider: provider })
+    expect(harness.stream.mock.calls[2][2].turns).toContainEqual(generatedTurn)
+    expect(conversationToChatMessages(harness.stream.mock.calls[2][2])).toContainEqual({ role: 'assistant', content: 'answer' })
+  })
+
+  it('aborts the active provider request when its session is cancelled', async () => {
+    const harness = createHarness()
+    let signal: AbortSignal | undefined
+    let started!: () => void
+    const ready = new Promise<void>((resolve) => {
+      started = resolve
+    })
+    harness.stream.mockImplementationOnce(async (_model, _provider, _messages, options) => {
+      signal = options?.abortSignal
+      started()
+      await new Promise<void>((_resolve, reject) => signal?.addEventListener('abort', () => reject(signal?.reason), { once: true }))
+    })
+    const send = harness.runtime.ingest('hello', { model: 'test', chatProvider: provider })
+    await ready
+    harness.runtime.cancelPendingSends('session-1')
+    await send
+    expect(signal?.aborted).toBe(true)
+    expect(harness.assistantAppended).toHaveLength(0)
+  })
+
+  it('stores visible partial output when its session is cancelled', async () => {
+    const harness = createHarness()
+    const partialOutput = 'partial answer already visible in chat'
+    let signal: AbortSignal | undefined
+    let streamed!: () => void
+    const visibleOutput = new Promise<void>((resolve) => {
+      streamed = resolve
+    })
+    harness.stream.mockImplementationOnce(async (_model, _provider, _messages, options) => {
+      signal = options?.abortSignal
+      await options?.onStreamEvent?.({ type: 'text-delta', text: partialOutput })
+      streamed()
+      await new Promise<void>((_resolve, reject) => signal?.addEventListener('abort', () => reject(signal?.reason), { once: true }))
+    })
+    const send = harness.runtime.ingest('hello', { model: 'test', chatProvider: provider })
+    await visibleOutput
+
+    harness.runtime.cancelPendingSends('session-1')
+    await send
+
+    expect(harness.sessionMessages['session-1']?.at(-1)).toEqual(expect.objectContaining({
+      content: expect.stringContaining('partial answer'),
+      interrupted: true,
+    }))
+    expect(harness.foregroundResets).toHaveLength(1)
+  })
+})
+
+it('runs consecutive orchestrator turns through the real Responses adapter', async () => {
+  const harness = createHarness()
+  const requests: { input: unknown[] }[] = []
+  const native = [
+    { type: 'reasoning', id: 'rs-1', summary: [], encrypted_content: 'opaque' },
+    { type: 'message', id: 'msg-1', role: 'assistant', content: [{ type: 'output_text', text: 'answer', annotations: [] }], phase: 'final_answer' },
+  ]
+  const provider: GenerationProvider = {
+    generation: model => ({ protocol: 'responses', webSearch: false, config: {
+      model,
+      baseURL: 'https://example.test/v1/',
+      fetch: async (_url: RequestInfo | URL, init?: RequestInit) => {
+        requests.push(JSON.parse(String(init?.body)))
+        const events = [
+          { type: 'response.output_text.delta', delta: 'answer' },
+          ...native.map(item => ({ type: 'response.output_item.done', item })),
+          { type: 'response.completed', response: { output: native, usage: null } },
+        ]
+        return new Response(events.map(event => `data: ${JSON.stringify(event)}\n\n`).join(''), { headers: { 'Content-Type': 'text/event-stream' } })
+      },
+    } }),
+  }
+  harness.stream.mockImplementation((model, chatProvider, context, options) => streamFrom({ model, chatProvider, conversation: context, options }))
+  await harness.runtime.ingest('first', { model: 'test', chatProvider: provider })
+  await harness.runtime.ingest('second', { model: 'test', chatProvider: provider })
+  expect(requests).toHaveLength(2)
+  expect(requests[1].input.slice(2, 4)).toEqual(native)
+  expect(harness.assistantAppended).toHaveLength(2)
+  expect(JSON.stringify(harness.promptProjections)).not.toContain('encrypted_content')
+  // ROOT CAUSE:
+  // Lifecycle snapshots retained native history after each composition.
+  // Keep opaque state on the provider boundary, outside diagnostic copies.
+  // https://github.com/moeru-ai/airi/pull/2477#discussion_r4015043327
+  expect(JSON.stringify(harness.lifecycleRecords)).not.toContain('encrypted_content')
+  expect(JSON.stringify(harness.lifecycleRecords)).toContain('answer')
+})

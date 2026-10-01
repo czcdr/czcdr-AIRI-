@@ -1,0 +1,68 @@
+import type { ChatRequestOptions } from '../../types'
+
+import { isStageTamagotchi } from '@proj-airi/stage-shared'
+import { createOpenAI } from '@xsai-ext/providers/create'
+import { z } from 'zod'
+
+import { ProviderValidationCheck } from '../../types'
+import { createOpenAICompatibleValidators } from '../../validators'
+import { defineProvider } from '../registry'
+
+const nvidiaConfigSchema = z.object({
+  apiKey: z
+    .string('API Key'),
+  baseUrl: z
+    .string('Base URL')
+    .optional()
+    .default('https://integrate.api.nvidia.com/v1/'),
+})
+
+type NvidiaConfig = z.input<typeof nvidiaConfigSchema>
+
+export const providerNvidia = defineProvider<NvidiaConfig, 'nvidia'>({
+  id: 'nvidia',
+  name: 'NVIDIA NIM',
+  nameLocalize: ({ t }) => t('settings.pages.providers.provider.nvidia.title'),
+  description: 'build.nvidia.com',
+  descriptionLocalize: ({ t }) => t('settings.pages.providers.provider.nvidia.description'),
+  tasks: ['chat'],
+  capabilities: { chat: { reasoning: { modes: ['enabled', 'disabled'] } } },
+  icon: 'i-simple-icons:nvidia',
+  isAvailableBy: isStageTamagotchi,
+
+  createProviderConfig: ({ t }) => nvidiaConfigSchema.extend({
+    apiKey: nvidiaConfigSchema.shape.apiKey.meta({
+      labelLocalized: t('settings.pages.providers.catalog.edit.config.common.fields.field.api-key.label'),
+      descriptionLocalized: t('settings.pages.providers.catalog.edit.config.common.fields.field.api-key.description'),
+      placeholderLocalized: t('settings.pages.providers.catalog.edit.config.common.fields.field.api-key.placeholder'),
+      type: 'password',
+    }),
+    baseUrl: nvidiaConfigSchema.shape.baseUrl.meta({
+      labelLocalized: t('settings.pages.providers.catalog.edit.config.common.fields.field.base-url.label'),
+      descriptionLocalized: t('settings.pages.providers.catalog.edit.config.common.fields.field.base-url.description'),
+      placeholderLocalized: t('settings.pages.providers.catalog.edit.config.common.fields.field.base-url.placeholder'),
+    }),
+  }),
+  createProvider(config) {
+    const provider = createOpenAI(config.apiKey, config.baseUrl)
+    return {
+      ...provider,
+      chat(model: string, options?: ChatRequestOptions) {
+        const request = provider.chat(model)
+        if (!options?.reasoning)
+          return request
+
+        return { ...request, chatTemplateKwargs: { enable_thinking: options.reasoning === 'enabled' } }
+      },
+    }
+  },
+
+  validationRequiredWhen(config) {
+    return !!config.apiKey?.trim()
+  },
+  validators: {
+    ...createOpenAICompatibleValidators({
+      checks: [ProviderValidationCheck.Connectivity, ProviderValidationCheck.ModelList, ProviderValidationCheck.ChatCompletions],
+    }),
+  },
+})

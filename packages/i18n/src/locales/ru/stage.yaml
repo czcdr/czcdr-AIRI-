@@ -1,0 +1,131 @@
+character-switcher:
+  title: Переключить персонажа
+  manage: Управлять персонажами
+  empty: Пока нет персонажей
+  failed: Не удалось переключить персонажа. Попробуйте еще раз.
+mobile-tools:
+  sign-in: Войти в AIRI
+  account-description: Учётная запись и настройки
+  sound: Звук
+  character-voice: Голос персонажа
+  title: Настройки
+  appearance: Внешний вид
+  dark-mode: Тёмный режим
+  application: Приложение
+  more: Ещё
+  background: Фон
+  settings: Все настройки
+  about: Подробнее
+  view: Вид
+  close-view: Сохранить и закрыть управление видом
+  hearing: Слух
+chat:
+  actions:
+    reply: Ответить
+    retry: Повторить
+    send: Отправить сообщение
+  message:
+    character-name:
+      core-system: Core система
+      you: Ты
+  reply:
+    cancel: Отменить ответ
+    message: Сообщение
+    replying-to: Ответить на {name}
+  reasoning: Причина
+  sessions:
+    title: Диалоги
+    new: + Новый
+    current: Текущая
+    confirm-delete: Удалить этот диалог и его сообщения?
+    cancel: Отменить
+    empty: Диалогов пока нет
+    cloud-badge: Синхронизировано с облаком
+    new-chat-fallback: Новый чат
+    delete: Удалить диалог
+render-error:
+  title: '{renderer} не удалось отобразить эту модель'
+  description: Модель выбрана, но сцена не смогла её отобразить.
+  report-description: |-
+    {renderer} не удалось отобразить выбранную модель.
+    ID модели: {modelId}
+    Ошибка: {error}
+message: Спроси что-нибудь
+send-mode:
+  title: Отправить ключ
+  double-enter: Двойной Enter
+speech-output:
+  mute: Отключить озвучивание
+  unmute: Включить озвучивание
+operations:
+  load-models: Загрузить модели
+  load-models-status:
+    loading: Загружается...
+    ready: Готово!
+select-a-audio-input: Выберите аудио вход
+select-a-model: Выберите модель
+select-a-voice: Выберите голос
+viewers:
+  debug-menu:
+    emotions: Эмоции
+    emotions-btn:
+      angry: '😠 Злость'
+      awkward: '😳 Неловкость'
+      happy: '😄 Радость'
+      neutral: '🙂 Нейтраль'
+      question: '🤔 Вопрос'
+      sad: '😫 Грусть'
+      surprised: '🤯 Удивление'
+      think: '🤨 Задумчивость'
+    vrm:
+      camera: Камера
+      model:
+        title: Модель
+profile-switcher:
+  no-profile: Профиль отсутствует
+  no-profiles: Нет профилей
+  save-as-new: Сохранить как Новый Профиль
+  new-profile-name: Имя профиля
+  manage: Управление профилями
+promo-banner:
+  items:
+    signin:
+      watermark: Луна
+      fallbackLabel: Лунный подарок
+      title: 7-дневный вход
+      eventName: Войдите, чтобы получить звездную пыль, рамки аватара и подарки к запуску.
+      reward: До 120 звёздной пыли
+      cta: Войти
+    build:
+      watermark: Сборка
+      fallbackLabel: Бонус сборки
+      title: Бонус от ящика с припасами
+      eventName: Выполняйте строительные задания, чтобы получать бонусные ваучеры и двойные материалы.
+      reward: 5 ваучеров на припасы + улучшающие материалы
+      cta: Просмотреть задания
+    spring:
+      watermark: Весна
+      fallbackLabel: Весенний розыгрыш
+      title: Карнавал капсул
+      eventName: Участвуйте в весеннем розыгрыше, чтобы открывать пузырьки, подвески и тематическую мебель.
+      reward: Первое привлечение за полцены + редкая подвеска
+      cta: Участвовать сейчас
+    coupon:
+      watermark: Диалог
+      fallbackLabel: Купон
+      title: Купон пополнения
+      eventName: Выполняйте чат взаимодействия, чтобы получать купоны на наборы расширения и голосовые пакеты.
+      reward: Экономьте 6 на 30 / Экономьте 15 на 68
+      cta: Подтвердить промокод
+    home:
+      watermark: Главная
+      fallbackLabel: Тема комнаты
+      title: Весеннее тематическое обновление
+      eventName: Открывайте темы для окна, стола и ночника, чтобы обновить свою комнату.
+      reward: Бесплатный билет на тематический розыгрыш при входе
+      cta: Просмотр тем
+waiting: Ожидание
+websocket-status:
+  connected: Подключено
+  disconnected: Нет подключения
+  open-settings: Открыть настройки подключения

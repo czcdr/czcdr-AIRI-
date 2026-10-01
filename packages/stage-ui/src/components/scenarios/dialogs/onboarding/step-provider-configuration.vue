@@ -1,0 +1,347 @@
+<script setup lang="ts">
+import type { ProviderMetadata } from '../../../../libs/providers/metadata'
+import type { OnboardingStepNextHandler, OnboardingStepPrevHandler } from './types'
+
+import { errorMessageFrom } from '@moeru/std'
+import { Button, Callout, FieldCheckbox, FieldInput, ScrollableArea } from '@proj-airi/ui'
+import { computedAsync } from '@vueuse/core'
+import { computed, ref, watch } from 'vue'
+import { useI18n } from 'vue-i18n'
+
+import { useProviderConfigStore } from '../../../../stores/providers/config'
+import { useProviderStore } from '../../../../stores/providers/provider'
+import { Alert } from '../../../misc'
+import { ProviderAccountIdInput } from '../../../scenarios/providers'
+
+interface Props {
+  selectedProviderId: string
+  selectedProvider: ProviderMetadata | null
+  onNext: OnboardingStepNextHandler
+  onPrevious: OnboardingStepPrevHandler
+}
+
+const props = defineProps<Props>()
+const { t } = useI18n()
+const providersStore = useProviderStore()
+const providerConfigStore = useProviderConfigStore()
+
+const apiKey = ref('')
+const baseUrl = ref('')
+const accountId = ref('')
+const enableChatCheck = ref(true)
+const customFieldValues = ref<Record<string, string>>({})
+
+const validation = ref<'unchecked' | 'pending' | 'succeed' | 'failed'>('unchecked')
+const validationError = ref<any>()
+
+const hasOnboardingFields = computed(() => (props.selectedProvider?.onboardingFields?.length ?? 0) > 0)
+
+// Initialize form with default values when provider changes, rehydrating from
+// the configuration saved on a previous visit to this step (for example after
+// going back from model selection) so step navigation does not wipe user input
+function initializeForm() {
+  const provider = props.selectedProvider
+  if (!provider)
+    return
+
+  const defaultOptions = provider.defaultConfig
+  const defaultBaseUrl = ('baseUrl' in defaultOptions ? String(defaultOptions.baseUrl) : '') || ''
+  const savedConfig = providerConfigStore.getProviderConfig(provider.id)
+  const savedBaseUrl = typeof savedConfig?.baseUrl === 'string' ? savedConfig.baseUrl : ''
+  const savedApiKey = typeof savedConfig?.apiKey === 'string' ? savedConfig.apiKey : ''
+  const savedAccountId = typeof savedConfig?.accountId === 'string' ? savedConfig.accountId : ''
+
+  baseUrl.value = savedBaseUrl || defaultBaseUrl
+  apiKey.value = savedApiKey
+  accountId.value = savedAccountId
+
+  // Initialize custom fields with their saved or default values
+  const fields: Record<string, string> = {}
+  for (const field of provider.onboardingFields ?? []) {
+    const savedValue = savedConfig?.[field.key]
+    fields[field.key] = typeof savedValue === 'string' ? savedValue : (field.defaultValue ?? '')
+  }
+  customFieldValues.value = fields
+
+  // Reset validation and chat check
+  validation.value = 'unchecked'
+  validationError.value = undefined
+  enableChatCheck.value = true
+}
+
+// Watch for provider changes
+watch(() => props.selectedProvider?.id, initializeForm)
+
+watch([apiKey, baseUrl, accountId, customFieldValues], () => {
+  if (validation.value === 'failed' || validation.value === 'succeed') {
+    validation.value = 'unchecked'
+    validationError.value = undefined
+  }
+}, { deep: true })
+
+// Computed properties
+const needsApiKey = computed(() => {
+  if (!props.selectedProvider)
+    return false
+  // Providers with custom onboarding fields handle their own auth
+  if (hasOnboardingFields.value)
+    return false
+  return props.selectedProvider.id !== 'ollama' && props.selectedProvider.id !== 'player2'
+})
+
+const needsBaseUrl = computed(() => {
+  if (!props.selectedProvider)
+    return false
+  // Providers with custom onboarding fields handle their own endpoints
+  if (hasOnboardingFields.value)
+    return false
+  return props.selectedProvider.id !== 'cloudflare-workers-ai'
+})
+
+const showChatCheckOption = computedAsync(
+  async () => props.selectedProvider
+    ? await providersStore.hasManualProviderValidators(props.selectedProvider.id)
+    : false,
+  false,
+)
+
+const canProceed = computed(() => {
+  if (!props.selectedProviderId)
+    return false
+
+  if (hasOnboardingFields.value) {
+    const fields = props.selectedProvider?.onboardingFields ?? []
+    for (const field of fields) {
+      if (field.required && !customFieldValues.value[field.key]?.trim())
+        return false
+    }
+  }
+  else if (needsApiKey.value && !apiKey.value.trim()) {
+    return false
+  }
+
+  return validation.value !== 'pending'
+})
+
+const primaryActionLabel = computed(() => {
+  return validation.value === 'failed'
+    ? t('settings.dialogs.onboarding.retry')
+    : t('settings.dialogs.onboarding.next')
+})
+
+async function validateConfiguration() {
+  if (!props.selectedProvider)
+    return
+
+  validation.value = 'pending'
+  validationError.value = undefined
+
+  try {
+    // Prepare config object
+    const config: Record<string, unknown> = {}
+
+    if (hasOnboardingFields.value) {
+      for (const [key, value] of Object.entries(customFieldValues.value)) {
+        if (value)
+          config[key] = value.trim()
+      }
+    }
+    else {
+      if (needsApiKey.value)
+        config.apiKey = apiKey.value.trim()
+      if (needsBaseUrl.value)
+        config.baseUrl = baseUrl.value.trim()
+      if (props.selectedProvider.id === 'cloudflare-workers-ai')
+        config.accountId = accountId.value.trim()
+    }
+
+    // Validate using provider's validator
+    const validationResult = await providersStore.validateProviderConfig(props.selectedProvider.id, config, {
+      skipChatPingCheck: !enableChatCheck.value,
+    })
+    validation.value = validationResult.valid ? 'succeed' : 'failed'
+    if (validation.value === 'failed') {
+      validationError.value = validationResult.reason
+    }
+  }
+  catch (error) {
+    validation.value = 'failed'
+    validationError.value = t('settings.dialogs.onboarding.validationError', {
+      error: errorMessageFrom(error) ?? 'Unknown error',
+    })
+  }
+}
+async function handleNext() {
+  await validateConfiguration()
+  if (validation.value === 'succeed') {
+    await props.onNext({
+      apiKey: apiKey.value,
+      baseUrl: baseUrl.value,
+      accountId: accountId.value,
+      customFields: hasOnboardingFields.value ? { ...customFieldValues.value } : undefined,
+    })
+  }
+}
+
+async function handleContinueAnyway() {
+  if (!props.selectedProvider)
+    return
+
+  // onNext saves the configuration and marks the provider configured, so a
+  // failed validation does not need a separate force-configured call here.
+  await props.onNext({
+    apiKey: apiKey.value,
+    baseUrl: baseUrl.value,
+    accountId: accountId.value,
+    customFields: hasOnboardingFields.value ? { ...customFieldValues.value } : undefined,
+  })
+}
+
+// Placeholder helpers
+function getApiKeyPlaceholder(providerId: string): string {
+  const placeholders: Record<string, string> = {
+    'openai': 'sk-...',
+    'azure-openai': 'Azure OpenAI API Key',
+    'anthropic': 'sk-ant-...',
+    'google-generative-ai': 'AI...',
+    'openrouter-ai': 'sk-or-...',
+    'deepseek': 'sk-...',
+    'xai': 'xai-...',
+    'together-ai': 'togetherapi-...',
+    'mistral-ai': 'mis-...',
+    'moonshot-ai': 'ms-...',
+    'modelscope': 'ms-...',
+    'fireworks-ai': 'fw-...',
+    'featherless-ai': 'fw-...',
+    'nvidia': 'nvapi-...',
+    'novita-ai': 'nvt-...',
+  }
+
+  return placeholders[providerId] || 'API Key'
+}
+
+function getBaseUrlPlaceholder(_providerId: string): string {
+  const defaultOptions = props.selectedProvider?.defaultConfig ?? {}
+  return typeof defaultOptions.baseUrl === 'string' && defaultOptions.baseUrl
+    ? defaultOptions.baseUrl
+    : 'https://api.example.com/v1/'
+}
+
+// Initialize on mount
+initializeForm()
+</script>
+
+<template>
+  <div h-full flex flex-col gap-4>
+    <div sticky top-0 z-100 flex flex-shrink-0 items-center gap-2>
+      <button outline-none @click="props.onPrevious">
+        <div i-solar:alt-arrow-left-line-duotone h-5 w-5 />
+      </button>
+      <h2 class="flex-1 text-center text-xl text-neutral-800 font-semibold md:text-left md:text-2xl dark:text-neutral-100">
+        {{ t('settings.dialogs.onboarding.configureProvider', { provider: props.selectedProvider?.localizedName }) }}
+      </h2>
+      <div h-5 w-5 />
+    </div>
+    <ScrollableArea v-if="props.selectedProvider" :class="['min-h-0 flex-1']">
+      <div :class="['space-y-4']">
+        <Callout :label="t('settings.dialogs.onboarding.credentialsSafeLabel')" theme="violet">
+          <div>
+            <div>
+              {{ t('settings.dialogs.onboarding.credentialsSafeLocal') }}
+            </div>
+            <div>
+              <i18n-t keypath="settings.dialogs.onboarding.credentialsSafeOpenSource" tag="span">
+                <template #github>
+                  <span inline-flex translate-y-1 items-center gap-1>
+                    <span i-simple-icons:github inline-block /><a decoration-underline decoration-dashed href="https://github.com/moeru-ai/airi" target="_blank" rel="noopener noreferrer">GitHub</a>
+                  </span>
+                </template>
+              </i18n-t>
+            </div>
+          </div>
+        </Callout>
+        <div class="space-y-4">
+          <!-- Custom onboarding fields (provider-specific, e.g. Amazon Bedrock SigV4) -->
+          <template v-if="hasOnboardingFields">
+            <FieldInput
+              v-for="field in props.selectedProvider.onboardingFields"
+              :key="field.key"
+              v-model="customFieldValues[field.key]"
+              :type="field.type"
+              :label="field.label"
+              :description="field.description"
+              :placeholder="field.placeholder || ''"
+              :required="field.required"
+            />
+          </template>
+
+          <!-- Standard fields for other providers -->
+          <template v-else>
+            <!-- API Key Input -->
+            <div v-if="needsApiKey">
+              <FieldInput
+                v-model="apiKey"
+                :placeholder="getApiKeyPlaceholder(props.selectedProvider.id)"
+                type="password"
+                label="API Key"
+                description="Enter your API key for the selected provider."
+                required
+              />
+            </div>
+
+            <!-- Base URL Input -->
+            <div v-if="needsBaseUrl">
+              <FieldInput
+                v-model="baseUrl"
+                :placeholder="getBaseUrlPlaceholder(props.selectedProvider.id)"
+                type="text"
+                label="Base URL"
+                description="Enter the base URL for the provider's API."
+              />
+            </div>
+
+            <!-- Account ID for Cloudflare -->
+            <div v-if="props.selectedProvider.id === 'cloudflare-workers-ai'">
+              <ProviderAccountIdInput v-model="accountId" />
+            </div>
+          </template>
+        </div>
+
+        <!-- Chat Ping Check Option -->
+        <FieldCheckbox
+          v-if="showChatCheckOption"
+          v-model="enableChatCheck"
+          :label="t('settings.dialogs.onboarding.enableChatCheck')"
+          placement="left"
+        />
+
+        <!-- Validation Status -->
+        <Alert v-if="validation === 'failed'" type="error">
+          <template #title>
+            <div class="w-full flex items-center justify-between">
+              <span>{{ t('settings.dialogs.onboarding.validationFailed') }}</span>
+              <button
+                type="button"
+                class="ml-2 rounded bg-red-100 px-2 py-0.5 text-xs text-red-600 font-medium transition-colors dark:bg-red-800/30 hover:bg-red-200 dark:text-red-300 dark:hover:bg-red-700/40"
+                @click="handleContinueAnyway"
+              >
+                {{ t('settings.pages.providers.common.continueAnyway') }}
+              </button>
+            </div>
+          </template>
+          <template v-if="validationError" #content>
+            <pre class="whitespace-pre-wrap break-all">{{ String(validationError) }}</pre>
+          </template>
+        </Alert>
+      </div>
+    </ScrollableArea>
+
+    <!-- Action Buttons -->
+    <Button
+      :label="primaryActionLabel"
+      :loading="validation === 'pending'"
+      :disabled="!canProceed"
+      @click="handleNext"
+    />
+  </div>
+</template>

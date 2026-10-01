@@ -1,0 +1,145 @@
+import type { ChatSessionsExport } from '../types/chat-session'
+
+import { isStageTamagotchi } from '@proj-airi/stage-shared'
+import { useSettingsScreenAmbientLight } from '@proj-airi/stage-shared/stores/screen-ambient-light'
+import { useSettingsLive2d } from '@proj-airi/stage-ui-live2d/composables/live2d'
+import { useLive2dParams } from '@proj-airi/stage-ui-live2d/stores/model-parameters'
+import { useModelStore } from '@proj-airi/stage-ui-three'
+
+import { useLive2DMotionMagicSettings } from '../features/motions/live2d'
+import { useChatStore } from '../stores/chat'
+import { useChatSessionStore } from '../stores/chat/session-store'
+import { useDisplayModelsStore } from '../stores/display-models'
+import { useMcpStore } from '../stores/mcp'
+import { useAiriCardStore } from '../stores/modules/airi-card'
+import { useConsciousnessStore } from '../stores/modules/consciousness'
+import { useConsciousnessSettingsStore } from '../stores/modules/consciousness-settings'
+import { useDiscordStore } from '../stores/modules/discord'
+import { useFactorioStore } from '../stores/modules/gaming-factorio'
+import { useMinecraftStore } from '../stores/modules/gaming-minecraft'
+import { useHearingStore } from '../stores/modules/hearing'
+import { useSpeechStore } from '../stores/modules/speech'
+import { useTwitterStore } from '../stores/modules/twitter'
+import { useWebSearchStore } from '../stores/modules/web-search'
+import { useOnboardingStore } from '../stores/onboarding'
+import { useProviderStore } from '../stores/providers/provider'
+import { useSettings, useSettingsAudioDevice } from '../stores/settings'
+
+export function useDataMaintenance() {
+  const chatStore = useChatSessionStore()
+  const chatOrchestrator = useChatStore()
+  const displayModelsStore = useDisplayModelsStore()
+  const providersStore = useProviderStore()
+  const settingsStore = useSettings()
+  const audioSettingsStore = useSettingsAudioDevice()
+  const live2dParamsStore = useLive2dParams()
+  const live2dSettingsStore = useSettingsLive2d()
+  const live2dMagicSettingsStore = useLive2DMotionMagicSettings()
+  const screenAmbientLightSettingsStore = useSettingsScreenAmbientLight()
+  const threeStore = useModelStore()
+  const hearingStore = useHearingStore()
+  const speechStore = useSpeechStore()
+  const consciousnessStore = useConsciousnessStore()
+  const consciousnessSettingsStore = useConsciousnessSettingsStore()
+  const twitterStore = useTwitterStore()
+  const webSearchStore = useWebSearchStore()
+  const discordStore = useDiscordStore()
+  const factorioStore = useFactorioStore()
+  const minecraftStore = useMinecraftStore()
+  const mcpStore = useMcpStore()
+  const onboardingStore = useOnboardingStore()
+  const airiCardStore = useAiriCardStore()
+
+  async function deleteAllModels() {
+    await displayModelsStore.resetDisplayModels()
+    settingsStore.stageModelSelected = 'preset-live2d-1'
+    await settingsStore.updateStageModel()
+  }
+
+  async function resetProvidersSettings() {
+    await providersStore.resetProviderSettings()
+  }
+
+  /** Attempts every independent reset and reports the first failure only after all operations settle. */
+  async function resetModulesSettings() {
+    // Schedule each reset separately so both synchronous errors and rejected
+    // leader RPCs leave the other modules free to finish their cleanup.
+    const results = await Promise.allSettled([
+      () => hearingStore.resetState(),
+      () => speechStore.resetState(),
+      () => consciousnessStore.resetState(),
+      () => consciousnessSettingsStore.resetState(),
+      () => twitterStore.resetState(),
+      () => webSearchStore.resetState(),
+      () => discordStore.resetState(),
+      () => factorioStore.resetState(),
+      () => minecraftStore.resetState(),
+    ].map(reset => Promise.resolve().then(reset)))
+    const failure = results.find(result => result.status === 'rejected')
+    if (failure)
+      throw failure.reason
+  }
+
+  async function deleteAllChatSessions() {
+    await chatOrchestrator.cancelPendingSends()
+    await chatStore.resetAllSessions()
+  }
+
+  async function exportChatSessions() {
+    const data = await chatStore.exportSessions()
+    return new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' })
+  }
+
+  function isChatSessionsPayload(payload: unknown): payload is ChatSessionsExport {
+    if (!payload || typeof payload !== 'object')
+      return false
+    return (payload as { format?: string }).format === 'chat-sessions-index:v1'
+  }
+
+  async function importChatSessions(payload: Record<string, unknown>) {
+    if (!isChatSessionsPayload(payload))
+      throw new Error('Invalid chat session export format')
+    await chatStore.importSessions(payload)
+    return payload
+  }
+
+  async function resetSettingsState() {
+    await settingsStore.resetState()
+    audioSettingsStore.resetState()
+    live2dParamsStore.resetState()
+    live2dSettingsStore.resetState()
+    live2dMagicSettingsStore.resetState()
+    screenAmbientLightSettingsStore.resetState()
+    threeStore.resetModelStore()
+    mcpStore.resetState()
+    onboardingStore.resetSetupState()
+    airiCardStore.resetState()
+  }
+
+  async function deleteAllData() {
+    await deleteAllModels()
+    await resetProvidersSettings()
+    await resetModulesSettings()
+    await deleteAllChatSessions()
+    await resetSettingsState()
+  }
+
+  async function resetDesktopApplicationState() {
+    if (!isStageTamagotchi())
+      return
+
+    await resetSettingsState()
+    await resetModulesSettings()
+  }
+
+  return {
+    deleteAllModels,
+    resetProvidersSettings,
+    resetModulesSettings,
+    deleteAllChatSessions,
+    exportChatSessions,
+    importChatSessions,
+    deleteAllData,
+    resetDesktopApplicationState,
+  }
+}

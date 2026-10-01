@@ -1,0 +1,97 @@
+import type { Conversation, StreamOptions } from '@proj-airi/core-agent'
+import type { GenerationProvider } from '@proj-airi/provider-inference'
+
+import type { DescribeToolImage } from './tool-images'
+
+import { streamFrom as coreStreamFrom, isContentArrayRelatedError, isToolRelatedError, modelKey } from '@proj-airi/core-agent'
+import { listModels } from '@xsai/model'
+import { defineStore } from 'pinia'
+import { ref } from 'vue'
+
+import { resolveLlmTools } from './tool-resolver'
+
+export type { StreamEvent, StreamOptions } from '@proj-airi/core-agent'
+export { isContentArrayRelatedError, isToolRelatedError } from '@proj-airi/core-agent'
+
+/** Core stream options plus the stage-ui reader of images in tool results. */
+export interface LlmStreamOptions extends StreamOptions {
+  /** Reads the images in tool results as text. See {@link resolveLlmTools}. */
+  describeToolImage?: DescribeToolImage
+}
+
+export const useLLM = defineStore('llm', () => {
+  const toolsCompatibility = ref<Map<string, boolean>>(new Map())
+  const contentArrayCompatibility = ref<Map<string, boolean>>(new Map())
+
+  async function stream(model: string, chatProvider: GenerationProvider, context: Conversation, options?: LlmStreamOptions) {
+    const key = modelKey(model, chatProvider.generation(model))
+    let toolExecutionStarted = false
+    const { tools: customTools, describeToolImage, ...streamOptions } = options ?? {}
+    const builtinToolsResolver = () => resolveLlmTools({ customTools, describeImage: describeToolImage })
+
+    const runStream = () => coreStreamFrom({
+      model,
+      chatProvider,
+      conversation: context,
+      options: {
+        ...streamOptions,
+        onStreamEvent: async (event) => {
+          if (event.type === 'tool-call')
+            toolExecutionStarted = true
+          await streamOptions.onStreamEvent?.(event)
+        },
+        toolsCompatibility: toolsCompatibility.value,
+        contentArrayCompatibility: contentArrayCompatibility.value,
+      },
+      builtinToolsResolver,
+    })
+
+    try {
+      await runStream()
+    }
+    catch (err) {
+      if (isToolRelatedError(err)) {
+        console.warn(`[llm] Auto-disabling tools for "${key}" due to tool-related error`)
+        toolsCompatibility.value.set(key, false)
+      }
+      // NOTICE:
+      // Auto-degrade content-part arrays to plain strings on the next attempt
+      // when the provider returned the Rust/serde-style "expected a string"
+      // 400. We retry once inline so the user's failing turn recovers without
+      // requiring them to resend; subsequent calls reuse the cached degrade.
+      // See: https://github.com/moeru-ai/airi/issues/1500
+      if (isContentArrayRelatedError(err) && contentArrayCompatibility.value.get(key) !== false) {
+        console.warn(`[llm] Auto-disabling content-part arrays for "${key}" and retrying once`)
+        contentArrayCompatibility.value.set(key, false)
+        // A completed tool can have external effects. A full retry must not repeat it.
+        if (toolExecutionStarted)
+          throw err
+        await runStream()
+        return
+      }
+      throw err
+    }
+  }
+
+  async function models(apiUrl: string, apiKey: string) {
+    if (apiUrl === '')
+      return []
+
+    try {
+      return await listModels({
+        baseURL: (apiUrl.endsWith('/') ? apiUrl : `${apiUrl}/`) as `${string}/`,
+        apiKey,
+      })
+    }
+    catch (err) {
+      if (String(err).includes(`Failed to construct 'URL': Invalid URL`))
+        return []
+      throw err
+    }
+  }
+
+  return {
+    models,
+    stream,
+  }
+})

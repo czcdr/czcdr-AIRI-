@@ -1,0 +1,9 @@
+electronCallback:
+  title:
+    loading: 正在完成登入
+    openingAiri: 正在打開 AIRI
+    signedIn: 您已登入
+    signInFailed: 登入失敗
+webCallback:
+  action:
+    tryAgain: 再試一次

@@ -1,0 +1,197 @@
+electronCallback:
+  title:
+    loading: サインインを完了しています
+    openingAiri: AIRIを開く
+    signedIn: サインインしています
+    signInFailed: ログインに失敗しました
+    finishSignInInAiri: AIRIへのサインインを完了してください
+    openAiriToContinue: AIRIを開いて続行してください
+  message:
+    checkingResponse: サインイン応答を確認し、AIRIへの引き継ぎを準備しています。
+    passingToAiri: サインイン情報をAIRIに転送しています。まもなくこのページは閉じます。
+    syncedAndSafeToClose: 当社は、お客様がAIRIから署名したクライアントに通知しました。
+    invalidResponse: このサインイン応答を使用できませんでした。
+    loopbackUnreachable: ブラウザーはローカルコールバックポートからAIRIに到達できませんでした。
+    tryOpenDirectly: 私たちは直接ローカルハンドオフを開いてみます。それでも失敗する場合は、下のボタンを使用してください。
+    automaticHandoffFailed: このブラウザセッションで自動ハンドオフは終了しませんでした。
+  label:
+    signIn: サインイン
+    safeToClose: このタブを閉じても安全です。
+    whyStillHere: なぜこのタブはまだここにありますか？
+  action:
+    openAiriManually: 手動でAIRIを開く
+  hint:
+    closeTabManually: 一部のブラウザではこのページを自動的に閉じることができません。手動で閉じることができます。
+signIn:
+  title: サインイン
+  step:
+    identify:
+      heading: サインイン
+      description: サインインまたはアカウントを作成するには、メールアドレスを入力してください。
+    password:
+      heading: お帰りなさい
+      description: '{email} として続行します。'
+    create:
+      heading: アカウントを作成
+      description: '{email} の新しいアカウントを作成します。'
+  password:
+    label: パスワード
+    placeholder: パスワード
+  newPassword:
+    label: パスワードを設定する
+    placeholder: 8文字以上で設定してください
+  confirmPassword:
+    label: パスワードを確認
+    placeholder: パスワードを再度入力
+  name:
+    label: 表示名
+    placeholder: 省略可能、既定でメールハンドルに
+  action:
+    continue: 続行
+    signIn: サインイン
+    createAccount: アカウントの作成
+    forgotPassword: パスワードをお忘れですか?
+    useDifferentEmail: 別のメールアドレスを使用
+  divider:
+    or: や
+  message:
+    redirecting: '{provider}… にリダイレクトしている'
+  error:
+    fallback: サインインに失敗
+    providerTimeout: プロバイダのサインインがタイムアウトしました。もう一度やり直してください。
+    unknown: 不明なエラーが発生しました
+    socialOnlyNoPassword: このメールアドレスはGoogleまたはGitHubに登録されています。下のボタンでサインインします。ログイン後、アカウント設定にパスワードを追加できます。
+    passwordMismatch: パスワードと確認用パスワードが一致しません。
+    invalidEmail: 有効なメールアドレスを入力してください
+  footer:
+    prefix: 続行することで、当社の
+    terms: 規約
+    and: と
+    privacy: プライバシーポリシー
+verifyEmail:
+  title:
+    pending: 受信箱の確認を
+    success: メールを確認しました
+    failed: 認証失敗
+  message:
+    pending: あなたのメールアドレスに確認リンクを送信しました。 アカウントの作成を完了するために開きます — リンクをクリックすると、このページは自動的に続行されます。
+    pendingWithAddress: '{email}に確認リンクを送信しました。 アカウントの作成を完了するために開きます — リンクをクリックすると、このページは自動的に続行されます。'
+    success: あなたのメールアドレスが認証され、サインインしています。このタブを閉じることができます。
+    failed: メールアドレスの確認ができませんでした（{error}）。新しいリンクをリクエストしてください。
+  action:
+    backToSignIn: サインインに戻る
+forgotPassword:
+  title: パスワードをリセットする
+  description: あなたのアカウントに関連付けられているメールアドレスを入力すると、リセットリンクが送信されます。
+  action:
+    send: リセットリンクを送信
+    backToSignIn: サインインに戻る
+  message:
+    sent: '{email} がアカウントに一致した場合、リセットリンクが進行中です。'
+  error:
+    fallback: リセットメールを送信できませんでした
+deleteAccount:
+  title:
+    success: アカウントが削除されました
+    failed: アカウントを削除できませんでした
+  message:
+    success: このアカウントは削除されました
+  action:
+    closeTab: このタブを閉じることができます。
+resetPassword:
+  title:
+    default: 新しいパスワードを設定します。
+    success: パスワードを更新しました
+  password:
+    label: 新しいパスワード
+    placeholder: 8文字以上で設定してください
+  confirmPassword:
+    label: 新しいパスワードを確認
+    placeholder: 新しいパスワードをもう一度入力してください
+  action:
+    reset: パスワードを更新
+    goSignIn: ログインに行く
+  message:
+    success: パスワードが更新されました。新しいパスワードでサインインしてください。
+  error:
+    fallback: パスワードを更新できませんでした。
+    missingToken: リセットリンクが無効または期限切れです。
+    passwordMismatch: パスワードと確認用パスワードが一致しません。
+profile:
+  title: アカウントプロフィール
+  description: アバター、名前、接続されたアカウントを管理します。
+  section:
+    profile: プロフィール
+    avatar: アバター
+    password: パスワード
+    linkedAccounts: 接続済みアカウント
+  field:
+    email: Eメール
+    emailVerified: メールアドレスの状態
+    createdAt: 登録済み
+  label:
+    verified: 認証済み
+    unverified: 未確認
+  name:
+    label: 表示名
+    placeholder: 他人があなたをどう見ているか
+  avatar:
+    altText: プロフィール写真
+    gravatarNotice: Gravatarのアバター。
+    gravatarLink: gravatar.com で管理する
+  password:
+    currentLabel: 現在のパスワード
+    currentPlaceholder: 現在のパスワードを入力してください
+    newLabel: 新しいパスワード
+    newPlaceholder: 8文字以上で設定してください
+    confirmLabel: 新しいパスワードを確認
+    confirmPlaceholder: 新しいパスワードをもう一度入力してください
+    setDescription: ソーシャルプロバイダ経由でサインインしました。現在のパスワードはまだありません。設定するために安全なリンクをメールします。
+    setLinkSent: パスワードを設定するには、 {email} を確認してください。
+    setLinkFailed: パスワード設定リンクを送信できませんでした。
+  linkedAccounts:
+    description: これらのプロバイダを通じてAIRIにサインインします。リンクを解除してアクセスを取り消し、もう一度リンクして別のアカウントに切り替えます。
+    status:
+      linked: リンク済
+      notLinked: リンクされていません
+      linkedSince: '{date} にリンクされました'
+    action:
+      link: リンク
+      unlink: リンク解除
+    message:
+      loading: 接続されたアカウントを読み込んでいます...
+      unlinked: '{provider} は切断されました。'
+      linkStarted: '{provider}… にリダイレクトしている'
+    error:
+      listFailed: 接続されたアカウントを読み込めませんでした。
+      unlinkFailed: このアカウントのリンクを解除できませんでした。
+      linkFailed: リンクフローを開始できませんでした。
+      lastAccount: "これはあなたの唯一のサインイン方法です。\nリンクを解除する前にパスワードを設定してください。"
+  action:
+    saveProfile: 変更を保存
+    changePassword: パスワードを変更
+    sendSetPasswordLink: パスワードを設定するためのリンクを電子メールで送る
+    signOut: サインアウト
+  message:
+    loading: プロフィールを読み込み中...
+    profileSaved: プロファイル更新済み。
+    passwordChanged: パスワードが変更されました。他のセッションはサインアウトされています。
+  error:
+    loadFailed: プロフィールを読み込めませんでした。
+    saveFailed: 変更を保存できませんでした。
+    changePasswordFailed: パスワードを変更できませんでした。
+    signOutFailed: サインアウトできませんでした。
+    passwordMismatch: 新しいパスワードと確認が一致しません。
+    passwordSameAsCurrent: 新しいパスワードは現在のパスワードと異なる必要があります。
+webCallback:
+  title:
+    signIn: サインイン
+    errorLabel: ログイン中にエラーが発生しました
+    loading: サインイン中…
+  message:
+    missingCodeOrState: 認証コードまたは状態がありません
+    missingFlowState: OIDCフロー状態がありません。もう一度ログインしてください
+    tokenExchangeFailed: トークンの交換に失敗しました
+    finalizing: AIRIで認証を完了しています。
+  action:
+    tryAgain: もう一度やり直してください
