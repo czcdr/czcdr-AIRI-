@@ -5,6 +5,7 @@ import { describe, expect, it } from 'vitest'
 import {
   artCenterOffsetX,
   artVisibleHeight,
+  framesAgree,
   growthToMargins,
   isArtClipped,
   scaleForMargins,
@@ -140,6 +141,30 @@ describe('artVisibleHeight and artCenterOffsetX', () => {
 
   it('measures the character against the window centre', () => {
     expect(artCenterOffsetX(fitted)).toBeCloseTo(161 - 170, 6)
+  })
+})
+
+describe('framesAgree', () => {
+  it('accepts the same character measured twice', () => {
+    expect(framesAgree(fitted, { ...fitted })).toBe(true)
+  })
+
+  it('accepts the pose moving a couple of percent between measurements', () => {
+    const posed: StageFrame = { ...fitted, art: { ...fitted.art, width: fitted.art.width * 1.02 } }
+
+    expect(framesAgree(fitted, posed)).toBe(true)
+  })
+
+  it('rejects a frame measured while the character was still small', () => {
+    const midRepaint: StageFrame = { ...fitted, art: { ...fitted.art, width: fitted.art.width * 0.8 } }
+
+    expect(framesAgree(fitted, midRepaint)).toBe(false)
+  })
+
+  it('rejects a frame from a canvas that has not resized yet', () => {
+    const stale: StageFrame = { ...fitted, width: fitted.width - 40 }
+
+    expect(framesAgree(fitted, stale)).toBe(false)
   })
 })
 

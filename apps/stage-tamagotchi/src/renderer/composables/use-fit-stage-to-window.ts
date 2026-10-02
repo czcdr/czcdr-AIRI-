@@ -5,7 +5,7 @@ import { useElectronEventaInvoke } from '@proj-airi/electron-vueuse'
 import { getStageViewport, measureStageArtBounds, useL2dViewControl } from '@proj-airi/stage-ui-live2d'
 import { ref } from 'vue'
 
-import { artCenterOffsetX, isArtClipped, wrappedWindowSize } from './stage-frame-geometry'
+import { artCenterOffsetX, framesAgree, isArtClipped, scaleForMargins, wrappedWindowSize } from './stage-frame-geometry'
 import { FIT_SAFETY, STAGE_FRAME_MARGINS } from './use-proportional-stage-scale'
 
 /**
@@ -27,18 +27,28 @@ const MIN_WINDOW_HEIGHT = 200
  * never be reached and the fit would spend every round chasing the animation.
  */
 const SCALE_TOLERANCE = 0.025
-const POSITION_TOLERANCE = 2
+/**
+ * How far the character may sit from where the fit would put it.
+ *
+ * The painted centre moves by several pixels with the pose, and acting on that
+ * would place the window again on every click — and take the size with it.
+ */
+const POSITION_TOLERANCE = 4
+const POSITION_TOLERANCE_RATIO = 0.015
 const BOUNDS_TOLERANCE = 8
+/** Share of the window a placement may be off by and still count as fitting. */
+const BOUNDS_TOLERANCE_RATIO = 0.05
 
 /** Bound on measurement rounds; each one is absolute, so one is typical. */
 const MAX_PASSES = 8
 
-/** Size taken off a cut character inside a pass, small enough to keep its size. */
-const CLIP_STEP = 0.97
+/** Longest a fit may run before its control is handed back. */
+const FIT_TIMEOUT = 20000
 
 /** Step used while a cut-off character is scaled back into view. */
-const SHRINK_STEP = 0.8
-const MAX_SHRINK_STEPS = 8
+const MAX_RECOVER_STEPS = 8
+const MIN_RECOVERED_SHARE = 0.4
+const MIN_RECOVER_STEP = 0.005
 
 const STAGE_SETTLE_TIMEOUT = 900
 const STAGE_SETTLE_INTERVAL = 40
@@ -99,6 +109,30 @@ export function useFitStageToWindow(options: { margins?: StageFrameMargins } = {
   }
 
   /**
+   * The character once two measurements agree on it.
+   *
+   * A fit decides the window size from one measurement, so a frame caught mid
+   * repaint would wrap a character that was never that small and leave it that
+   * way. Re-reading costs about a millisecond.
+   */
+  async function readStableFrame() {
+    let frame = readFrame()
+
+    for (let attempt = 0; frame && attempt < 3; attempt++) {
+      await wait(MODEL_SETTLE_DELAY)
+      const next = readFrame()
+      if (!next)
+        return undefined
+      if (framesAgree(frame, next))
+        return next
+
+      frame = next
+    }
+
+    return frame
+  }
+
+  /**
    * The character as painted after the user scale was just changed.
    *
    * The store holds the new scale immediately, but the canvas repaints a frame
@@ -108,6 +142,13 @@ export function useFitStageToWindow(options: { margins?: StageFrameMargins } = {
    * little on every round because of it.
    */
   async function frameAfterApply(before: StageFrame, scale: number) {
+    // A cut character is painted to the window edge, so its bounds cannot move
+    // until it fits: waiting for them would burn the timeout on every step.
+    if (isArtClipped(before)) {
+      await wait(MODEL_SETTLE_DELAY)
+      return readFrame()
+    }
+
     const expected = before.art.width * (scale / before.scale)
     const threshold = Math.max(1, Math.abs(expected - before.art.width) * 0.5)
     const deadline = Date.now() + STAGE_SETTLE_TIMEOUT
@@ -129,19 +170,27 @@ export function useFitStageToWindow(options: { margins?: StageFrameMargins } = {
   /**
    * Scales the character until it is fully visible.
    *
-   * A cut character cannot be measured, so its real size is unknown and the first
-   * steps only have to be safe. Scaling down by a fixed step reaches a state that
-   * can be measured; the rounds after that set their target from the measurement
-   * itself and do not depend on the steps that led there.
+   * A cut character cannot be measured, so its real size is unknown. The step is
+   * still solved from the margins rather than fixed: the character is at least as
+   * large as the window, so it may keep only the room the margins leave, which is
+   * a few percent at a time instead of the fifth of its size a fixed step took.
+   * It can never go below the floor, so an odd measurement cannot shrink the
+   * character away while the fit runs.
    */
   async function reveal(frame: StageFrame) {
+    const floor = currentScale() * MIN_RECOVERED_SHARE
     let current: StageFrame | undefined = frame
 
-    for (let step = 0; current && isArtClipped(current) && step < MAX_SHRINK_STEPS; step++) {
+    for (let step = 0; current && isArtClipped(current) && step < MAX_RECOVER_STEPS; step++) {
       const before = current
-      const scale = currentScale() * SHRINK_STEP
-      await applyScale(scale)
-      current = await frameAfterApply(before, scale)
+      const scale = currentScale()
+      const target = Math.max(floor, scaleForMargins(current, margins) * FIT_SAFETY)
+
+      if (!(scale - target > scale * MIN_RECOVER_STEP))
+        break
+
+      await applyScale(target)
+      current = await frameAfterApply(before, target)
     }
 
     return current && !isArtClipped(current) ? current : undefined
@@ -189,12 +238,19 @@ export function useFitStageToWindow(options: { margins?: StageFrameMargins } = {
     if (fitting.value)
       return false
 
-    const initial = readFrame()
+    const initial = await readStableFrame()
     if (!initial) {
       return false
     }
 
     fitting.value = true
+
+    // The control that starts a fit is disabled while one runs, so a fit that
+    // somehow never returns would leave the button unusable for the rest of the
+    // session. The bound is far longer than a fit takes.
+    const watchdog = setTimeout(() => {
+      fitting.value = false
+    }, FIT_TIMEOUT)
 
     try {
       // Step 1: whatever is cut off has to fit before it can be measured.
@@ -218,19 +274,25 @@ export function useFitStageToWindow(options: { margins?: StageFrameMargins } = {
       const artWidth = visible.art.width
 
       // Step 3: keep the character's pixel size, wrap the window around it, and
-      // hold its place on screen. A resize re-frames the model, which changes both
-      // the size and the offset from the window centre, so each pass measures the
-      // character it is about to wrap.
+      // hold its place on screen.
+      //
+      // The window is placed once, and only the size is corrected after that.
+      // Placing it again from the character as it looks after each correction
+      // makes the two chase each other — the stage re-frames the model for the new
+      // window, which changes the size, which asks for another correction — and a
+      // fit used to walk the character a few percent down on every pass.
+      let placed = false
+
       for (let pass = 0; pass < MAX_PASSES; pass++) {
-        const current = readFrame()
+        const current = await readStableFrame()
         if (!current)
           break
 
         if (isArtClipped(current)) {
-          // A cut character cannot be measured, so the size comes down by a step
-          // small enough to keep it recognisable; the next round reaches the exact
-          // size again. Larger steps would throw most of the size away.
-          const scale = current.scale * CLIP_STEP
+          // A cut character cannot be measured, so the step comes from the margins
+          // instead: a few percent at a time, never below the floor. The round
+          // after it reaches the exact size again.
+          const scale = Math.max(currentScale() * MIN_RECOVERED_SHARE, scaleForMargins(current, margins) * FIT_SAFETY)
           await applyScale(scale)
           await frameAfterApply(current, scale)
           continue
@@ -248,15 +310,20 @@ export function useFitStageToWindow(options: { margins?: StageFrameMargins } = {
 
         const sizeFix = artWidth / current.art.width
         const sizeOk = !Number.isFinite(sizeFix) || Math.abs(sizeFix - 1) <= SCALE_TOLERANCE
-        const boundsOk = Math.abs(bounds.x - target.x) <= POSITION_TOLERANCE
-          && Math.abs(bounds.y - target.y) <= POSITION_TOLERANCE
-          && Math.abs(bounds.width - target.width) <= BOUNDS_TOLERANCE
-          && Math.abs(bounds.height - target.height) <= BOUNDS_TOLERANCE
+        // A window that already holds the character with its margins is left where
+        // it is: the painted centre and size move by a few percent with the pose,
+        // and placing the window again for every such reading — and again on the
+        // next click — walks it a little further out each time.
+        const wiggleX = Math.max(POSITION_TOLERANCE, target.width * POSITION_TOLERANCE_RATIO)
+        const boundsOk = Math.abs(bounds.x - target.x) <= wiggleX
+          && Math.abs(bounds.y - target.y) <= wiggleX
+          && Math.abs(bounds.width - target.width) <= Math.max(BOUNDS_TOLERANCE, target.width * BOUNDS_TOLERANCE_RATIO)
+          && Math.abs(bounds.height - target.height) <= Math.max(BOUNDS_TOLERANCE, target.height * BOUNDS_TOLERANCE_RATIO)
 
         if (sizeOk && boundsOk)
           break
 
-        // The size is corrected first: the window wrap is measured from it.
+        // The size comes first: the window was placed around the size it asks for.
         if (!sizeOk) {
           const scale = current.scale * sizeFix
           await applyScale(scale)
@@ -264,6 +331,10 @@ export function useFitStageToWindow(options: { margins?: StageFrameMargins } = {
           continue
         }
 
+        if (placed)
+          break
+
+        placed = true
         await setBounds([target])
         await waitForStageSize(target.width, target.height)
         await wait(MODEL_SETTLE_DELAY)
@@ -279,6 +350,7 @@ export function useFitStageToWindow(options: { margins?: StageFrameMargins } = {
       return true
     }
     finally {
+      clearTimeout(watchdog)
       fitting.value = false
     }
   }

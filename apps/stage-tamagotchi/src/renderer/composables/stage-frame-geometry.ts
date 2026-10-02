@@ -69,6 +69,22 @@ export const ART_CLIP_EPSILON = 2
 export const SCALE_TOLERANCE = 0.01
 
 /**
+ * True when two measurements describe the same painted character.
+ *
+ * The canvas paints a frame or two behind whatever changed it, so a frame caught
+ * mid repaint describes neither the size before nor the size after. A decision
+ * taken from one of those asks for a size the character never had: it is how a
+ * window fit ended up wrapping a character that was briefly measured small, which
+ * is what made repeated fits shrink it a little at a time.
+ */
+export function framesAgree(a: StageFrame, b: StageFrame, tolerance = 0.03) {
+  return Math.abs(a.width - b.width) <= 1
+    && Math.abs(a.height - b.height) <= 1
+    && Math.abs(a.art.width - b.art.width) <= Math.max(2, a.art.width * tolerance)
+    && Math.abs(a.art.y - b.art.y) <= Math.max(2, a.art.width * tolerance)
+}
+
+/**
  * True when the window cuts the character on the left, top or right edge.
  *
  * The bottom edge is where the stage always cuts the character, so it is not a
