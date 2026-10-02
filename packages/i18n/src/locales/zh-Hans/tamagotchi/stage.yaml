@@ -17,6 +17,7 @@ docs:
   'hide-chat': 收起聊天
   'refresh': 刷新
   'center-main-window': 移至屏幕中央
+  'fit-window': 窗口贴合角色
   'open-hearing-controls': 打开听力控制
   'drag-to-move-window': 拖动以移动窗口
   'mute': 静音

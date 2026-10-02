@@ -16,6 +16,7 @@ docs:
   'open-chat': Abrir Chat
   'refresh': Actualizar
   'center-main-window': Mover al centro de la pantalla
+  'fit-window': Ajustar la ventana al personaje
   'open-hearing-controls': Abrir controles de audición
   'drag-to-move-window': Arrastra para mover la ventana
   'switch-to-light-mode': Cambiar a modo claro

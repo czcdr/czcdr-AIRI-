@@ -16,6 +16,7 @@ docs:
   'open-chat': チャットを開く
   'refresh': 再読み込み
   'center-main-window': 画面中央に移動
+  'fit-window': ウィンドウをキャラクターに合わせる
   'open-hearing-controls': 聴覚コントロールを開く
   'drag-to-move-window': ウィンドウをドラッグして移動
   'switch-to-light-mode': ライトモードに切り替え

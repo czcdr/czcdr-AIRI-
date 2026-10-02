@@ -11,6 +11,7 @@ export type ControlsIslandAction
     | 'toggle_chat'
     | 'refresh_window'
     | 'center_main_window'
+    | 'fit_window_to_model'
     | 'switch_to_light_mode'
     | 'switch_to_dark_mode'
     | 'pin_on_top'

@@ -8,6 +8,8 @@ import { coverRect } from '@proj-airi/stage-shared'
 import { Live2DModel } from 'pixi-live2d-display/cubism4'
 import { onMounted, onUnmounted, ref, shallowRef, watch } from 'vue'
 
+import { publishStageSurface, releaseStageSurface } from '../../../composables/live2d/stage-surface'
+
 const props = withDefaults(defineProps<{
   width: number
   height: number
@@ -100,6 +102,10 @@ async function initLive2DPixiStage(parent: HTMLDivElement) {
 
   isPixiCanvasReady.value = true
   componentState.value = 'mounted'
+
+  // The stage paints the character the window is sized around, so its canvas is
+  // published here rather than looked up in the DOM by whoever needs to measure it.
+  publishStageSurface({ canvas: pixiAppCanvas.value, resolution: props.resolution })
 
   await syncBackground()
 }
@@ -218,6 +224,7 @@ onMounted(async () => {
 onUnmounted(() => {
   // Destroying the application detaches its children without freeing them, so the
   // scene texture is released before the stage it hangs from disappears.
+  releaseStageSurface(pixiAppCanvas.value)
   backgroundSprite.value?.destroy({ baseTexture: true, texture: true })
   backgroundSprite.value = undefined
   pixiApp.value?.destroy()

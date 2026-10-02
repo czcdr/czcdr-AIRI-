@@ -105,6 +105,8 @@ First enable microphone input and select the microphone; if prompted for permiss
 
 - **Drag to move window** - Hold the left mouse button and drag to move the main window.
 
+Resizing this window resizes the character with it: the character keeps its share of the window and follows the edge you drag, and it never grows past the room the window has, so resizing cannot cut it off. Use **Fit window to character** afterwards to tighten the frame again.
+
 Click **Expand**. The available controls are:
 
 - **Sign in** — sign in to your AIRI account.
@@ -113,6 +115,7 @@ Click **Expand**. The available controls are:
 - **Open Chat** — open the chat window.
 - **Refresh** — refresh the main window.
 - **Move to screen center** — moves the window to the center of the screen.
+- **Fit window to character** — resizes the window around the character that is on screen. A character that was drawn past the window edge, which is what an imported model usually looks like, is scaled back until it is fully visible, and the window is then tightened around it so no empty band is left above or beside it. The character keeps its pixel size whenever it already fits, and stays where it is on the desktop.
 - "Switch to dark mode"/"Switch to light mode" - switch AIRI's interface theme.
 - "Pin on top"/"Unpin from top" - control whether the AIRI window stays above other windows.
 - "Auto hide"/"Always show" - control whether the AIRI window gets out of the way when you move the pointer over it.

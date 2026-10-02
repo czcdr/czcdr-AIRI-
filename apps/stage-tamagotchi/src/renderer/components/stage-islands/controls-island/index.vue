@@ -28,6 +28,8 @@ import {
   electronStartDraggingWindow,
   electronWindowSetAlwaysOnTop,
 } from '../../../../shared/eventa'
+import { useFitStageToWindow } from '../../../composables/use-fit-stage-to-window'
+import { useProportionalStageScale } from '../../../composables/use-proportional-stage-scale'
 import { useControlsIslandLayout } from './use-controls-island-layout'
 import { useControlsIslandPlacement } from './use-controls-island-placement'
 
@@ -57,12 +59,24 @@ const settingsAudioDeviceStore = useSettingsAudioDevice()
 const settingsStore = useSettings()
 const context = useElectronEventaContext()
 const { enabled } = storeToRefs(settingsAudioDeviceStore)
-const { alwaysOnTop, controlsIslandIconSize } = storeToRefs(settingsStore)
+const { alwaysOnTop, controlsIslandIconSize, stageModelSelectedDisplayModel } = storeToRefs(settingsStore)
 const openSettings = useElectronEventaInvoke(electronOpenSettings)
 const isLinux = useElectronEventaInvoke(electron.app.isLinux)
 const quitApp = useElectronEventaInvoke(electronAppQuit)
 const setAlwaysOnTop = useElectronEventaInvoke(electronWindowSetAlwaysOnTop)
 const centerMainWindow = useElectronEventaInvoke(electronCenterMainWindow)
+
+const { fitting, fit } = useFitStageToWindow()
+// A resize the fit performs is not the user's, so it only re-baselines.
+const proportionalStageScale = useProportionalStageScale({
+  suspended: () => fitting.value,
+  model: stageModelSelectedDisplayModel,
+})
+
+async function fitWindowToStage() {
+  await fit()
+  proportionalStageScale.reset()
+}
 
 const expanded = ref(false)
 // Closing disables interaction immediately. Keep layout until the exit
@@ -372,6 +386,24 @@ function resetMainWindowPosition() {
                     </ControlButton>
                     <template #tooltip>
                       {{ t('tamagotchi.stage.controls-island.center-main-window') }}
+                    </template>
+                  </ControlButtonTooltip>
+
+                  <ControlButtonTooltip disable-hoverable-content>
+                    <ControlButton
+                      v-track-button="{
+                        name: 'controls_island_action',
+                        action: 'fit_window_to_model',
+                      }"
+                      :button-style="adjustStyleClasses.button"
+                      :disabled="fitting"
+                      :aria-label="t('tamagotchi.stage.controls-island.fit-window')"
+                      @click="() => fitWindowToStage()"
+                    >
+                      <div i-solar:crop-minimalistic-linear :class="adjustStyleClasses.icon" text="neutral-800 dark:neutral-300" />
+                    </ControlButton>
+                    <template #tooltip>
+                      {{ t('tamagotchi.stage.controls-island.fit-window') }}
                     </template>
                   </ControlButtonTooltip>
 

@@ -17,6 +17,7 @@ docs:
   'hide-chat': Hide Chat
   'refresh': Refresh
   'center-main-window': Move to screen center
+  'fit-window': Fit window to character
   'open-hearing-controls': Open hearing Controls
   'drag-to-move-window': Drag to move window
   'mute': Mute
