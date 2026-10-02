@@ -9,7 +9,7 @@ const props = defineProps<{ buttonStyle?: string, disabled?: boolean }>()
     size="sm"
     :disabled="props.disabled"
     :class="[
-      'p-2!',
+      'p-[var(--island-pad)]!',
       props.buttonStyle,
     ]"
   >

@@ -46,6 +46,17 @@ const appConfigSchema = object({
   }))),
 })
 
+/**
+ * Smallest the stage window may become.
+ *
+ * The window is the frame around the character and carries the controls Island,
+ * so below this the character would be unusably small and the Island would clip
+ * its own controls. The Island keeps a minimum icon size and rearranges within
+ * this box, which is why the bound lives here and not in the renderer.
+ */
+const MAIN_WINDOW_MIN_WIDTH = 240
+const MAIN_WINDOW_MIN_HEIGHT = 200
+
 type AppConfig = InferOutput<typeof appConfigSchema>
 
 export async function setupMainWindow(params: {
@@ -99,6 +110,8 @@ export async function setupMainWindow(params: {
   if (params.onWindowCreated) {
     params.onWindowCreated(window)
   }
+
+  window.setMinimumSize(MAIN_WINDOW_MIN_WIDTH, MAIN_WINDOW_MIN_HEIGHT)
 
   let allowClose = false
   onAppBeforeQuit(() => {

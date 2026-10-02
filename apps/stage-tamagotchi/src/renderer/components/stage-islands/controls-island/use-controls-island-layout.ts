@@ -34,6 +34,15 @@ export function useControlsIslandLayout(elements: LayoutElements, expanded: Ref<
   const scrollWholeIsland = computed(() => main.height.value > available.height.value
     || main.width.value > available.width.value
     || (sideways.value && available.width.value - main.width.value - gap.width.value <= 0))
+  /**
+   * The vertical strip of main controls does not fit the window height.
+   *
+   * The Island keeps a minimum icon size rather than shrinking forever, so the
+   * caller arranges this strip along the edge once the window is too short.
+   */
+  const mainOverflowsHeight = computed(() => main.height.value > 0
+    && available.height.value > 0
+    && main.height.value > available.height.value)
   const panelStyle = computed(() => ({
     maxWidth: scrollWholeIsland.value ? 'none' : `${Math.max(0, available.width.value - (sideways.value ? main.width.value + gap.width.value : 0))}px`,
     maxHeight: scrollWholeIsland.value ? 'none' : `${Math.max(0, available.height.value - (sideways.value ? 0 : main.height.value + gap.width.value))}px`,
@@ -85,5 +94,5 @@ export function useControlsIslandLayout(elements: LayoutElements, expanded: Ref<
     elements.menuViewport.value?.scrollTo(0, 0)
   }, { flush: 'post' })
 
-  return { direction, scrollWholeIsland, panelStyle, layoutClasses, arrowRotation, motionOffset }
+  return { direction, scrollWholeIsland, mainOverflowsHeight, panelStyle, layoutClasses, arrowRotation, motionOffset }
 }

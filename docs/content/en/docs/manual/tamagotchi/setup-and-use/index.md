@@ -107,6 +107,8 @@ First enable microphone input and select the microphone; if prompted for permiss
 
 Resizing this window resizes the character with it: the character keeps its share of the window and follows the edge you drag, and it never grows past the room the window has, so resizing cannot cut it off. Use **Fit window to character** afterwards to tighten the frame again.
 
+The window itself has a minimum size (about 240×200) and cannot be shrunk past it. The controls Island follows the window height, never grows past its default size, and stops shrinking at a minimum size instead of being clipped by the window edge.
+
 Click **Expand**. The available controls are:
 
 - **Sign in** — sign in to your AIRI account.

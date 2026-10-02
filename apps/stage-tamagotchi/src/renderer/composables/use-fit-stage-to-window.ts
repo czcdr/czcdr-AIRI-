@@ -23,7 +23,7 @@ const SCALE_TOLERANCE = 0.008
 const POSITION_TOLERANCE = 2
 
 /** Bound on measurement rounds; each one shrinks or grows towards the target. */
-const MAX_PASSES = 5
+const MAX_PASSES = 6
 
 /** Step used while a cut-off character is scaled back into view. */
 const SHRINK_STEP = 0.75
@@ -280,6 +280,13 @@ export function useFitStageToWindow() {
         })])
         await waitForStageSize(bounds.width, bounds.height)
       }
+
+      // A fit that ends with the character cut off has failed at the one thing it
+      // exists for, and a scale correction can land there when a measurement was
+      // read before the stage repainted. Settle it before returning.
+      const settled = measure()
+      if (settled?.clipped)
+        await revealCharacter(settled)
 
       return true
     }

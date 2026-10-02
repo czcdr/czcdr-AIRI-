@@ -16,9 +16,13 @@ const MARGIN_BOTTOM = 6
 const MAX_USER_SCALE = 3
 
 /** A resize settles before the character is re-measured; dragging emits many. */
-const RESIZE_DEBOUNCE = 120
-const STAGE_SETTLE_TIMEOUT = 700
+const RESIZE_DEBOUNCE = 140
+const STAGE_SETTLE_TIMEOUT = 900
 const STAGE_SETTLE_INTERVAL = 40
+const SCALE_APPLY_DELAY = 180
+
+/** The model transform follows the canvas resize by a frame or two. */
+const MODEL_SETTLE_DELAY = 100
 
 /** Ratios below this are treated as "the user did not really resize". */
 const MIN_FACTOR_DELTA = 0.01
@@ -35,15 +39,15 @@ const wait = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms
 /**
  * Keeps the character proportional to the window while the user resizes it.
  *
- * The stage already scales a model with the window, but only with whichever
- * dimension is currently binding, so a window that is roughly square stops
- * following the edge the user is dragging. This watches the window instead and
- * drives the user scale directly:
+ * The stage scales a model with the window through whichever dimension is
+ * binding, so a window that is roughly square stops following the edge the user
+ * drags. This watches the window instead and drives the user scale directly: the
+ * character keeps the share of the window it had, and never grows past the room
+ * the window has, so resizing cannot cut it off.
  *
- * - the character keeps the share of the window it had, following the dimension
- *   the user changed, and
- * - it never grows past the room the window has, so resizing cannot cut the
- *   character off — the case the window fit exists to undo.
+ * The window itself is left alone. A resize the user performs is theirs, and
+ * moving another edge while they drag reads as the window running away from the
+ * cursor; the window fit exists for tightening the frame on request.
  *
  * `suspended` marks window changes that are not the user's, such as the fit
  * itself; those only refresh the baseline.
@@ -107,8 +111,21 @@ export function useProportionalStageScale(options: {
       return
 
     // The stage re-frames the model for the new window first, so the measurement
-    // below describes the character the user is looking at.
+    // below describes the character the user sees. The canvas resizes a frame
+    // before the model transform follows, so the wait above is not enough alone.
     if (!await waitForStageSize(width, height)) {
+      reset()
+      return
+    }
+    await wait(MODEL_SETTLE_DELAY)
+
+    const previous = baseline
+    const widthRatio = width / previous.width
+    const heightRatio = height / previous.height
+    const widthDominant = Math.abs(widthRatio - 1) >= Math.abs(heightRatio - 1)
+    const growth = widthDominant ? widthRatio : heightRatio
+
+    if (!Number.isFinite(growth) || Math.abs(growth - 1) <= MIN_FACTOR_DELTA) {
       reset()
       return
     }
@@ -120,12 +137,6 @@ export function useProportionalStageScale(options: {
       return
     }
 
-    const previous = baseline
-    // The character follows the edge the user moved. A corner drag changes both
-    // dimensions, and whichever changed more is the one that was asked for.
-    const widthRatio = width / previous.width
-    const heightRatio = height / previous.height
-    const growth = Math.abs(widthRatio - 1) >= Math.abs(heightRatio - 1) ? widthRatio : heightRatio
     // The stage anchors the model to the bottom centre, so artwork that sits
     // off-centre keeps that offset in every window; the room left is what the
     // narrower side allows.
@@ -134,22 +145,24 @@ export function useProportionalStageScale(options: {
     const allowedHeight = viewport.height - MARGIN_TOP - MARGIN_BOTTOM
     const scale = viewControl.scale.value
 
-    const factor = Math.min(
-      (previous.artWidth * growth) / art.width,
-      allowedWidth / art.width,
-      allowedHeight / art.height,
-      MAX_USER_SCALE / scale,
-    )
+    let factor = (previous.artWidth * growth) / art.width
+    // Only growth is bounded. Capping a shrink here would take a little off on
+    // every resize event and walk the character down to nothing.
+    if (factor > 1)
+      factor = Math.min(factor, allowedWidth / art.width, allowedHeight / art.height, MAX_USER_SCALE / scale)
 
     const applied = Number.isFinite(factor) && factor > 0 && Math.abs(factor - 1) > MIN_FACTOR_DELTA ? factor : 1
-    if (applied !== 1)
+    if (applied !== 1) {
       viewControl.set('scale', scale * applied)
+      await wait(SCALE_APPLY_DELAY)
+    }
 
+    const settled = measureStageArtBounds()
     baseline = {
-      width,
-      height,
-      artWidth: art.width * applied,
-      artHeight: art.height * applied,
+      width: window.innerWidth,
+      height: window.innerHeight,
+      artWidth: settled?.width ?? art.width * applied,
+      artHeight: settled?.height ?? art.height * applied,
     }
   }
 

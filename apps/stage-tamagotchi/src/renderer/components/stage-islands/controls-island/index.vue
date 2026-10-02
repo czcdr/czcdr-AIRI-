@@ -4,7 +4,7 @@ import { useElectronEventaContext, useElectronEventaInvoke, useElectronMouseInEl
 import { IS_DEV } from '@proj-airi/stage-shared'
 import { useSettings, useSettingsAudioDevice } from '@proj-airi/stage-ui/stores/settings'
 import { ScrollableArea, useTheme } from '@proj-airi/ui'
-import { refDebounced, useFocusWithin, useIntervalFn, useMouseInElement, useMousePressed } from '@vueuse/core'
+import { refDebounced, useFocusWithin, useIntervalFn, useMouseInElement, useMousePressed, useWindowSize } from '@vueuse/core'
 import { storeToRefs } from 'pinia'
 import { computed, reactive, ref, useId, useTemplateRef, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
@@ -94,7 +94,7 @@ const availableSpaceElement = useTemplateRef<HTMLElement>('availableSpace')
 const gapElement = useTemplateRef<HTMLElement>('gap')
 const menuId = useId()
 const profileOpen = ref(false)
-const { direction, scrollWholeIsland, panelStyle, layoutClasses: islandLayoutClasses, arrowRotation, motionOffset } = useControlsIslandLayout({
+const { direction, scrollWholeIsland, mainOverflowsHeight, panelStyle, layoutClasses: islandLayoutClasses, arrowRotation, motionOffset } = useControlsIslandLayout({
   main: mainControlsElement,
   menu: menuContent,
   available: availableSpaceElement,
@@ -190,7 +190,28 @@ function toggleControls() {
   expanded.value = !expanded.value
 }
 
-// Grouped classes for icon / border / padding and combined style class
+// Grouped classes for icon / border / padding and combined style class.
+//
+// The Island follows the window size so a small window keeps a usable strip of
+// controls, and never grows past the size it always had. The root below sets
+// `--island-*`, which every control in the Island inherits.
+const controlsIslandReferenceHeight = 600
+const controlsIslandMinScale = 0.7
+const controlsIslandMaxScale = 1
+
+const { height: windowHeight } = useWindowSize()
+
+const controlsIslandScale = computed(() => {
+  const raw = windowHeight.value / controlsIslandReferenceHeight
+  return Math.min(controlsIslandMaxScale, Math.max(controlsIslandMinScale, raw))
+})
+
+const controlsIslandStyle = computed(() => ({
+  '--island-icon': `${(1.25 * controlsIslandScale.value).toFixed(3)}rem`,
+  '--island-pad': `${(0.5 * controlsIslandScale.value).toFixed(3)}rem`,
+  '--island-border': `${Math.max(1, Math.round(2 * controlsIslandScale.value))}px`,
+}))
+
 const adjustStyleClasses = computed(() => {
   let isLarge: boolean
 
@@ -204,15 +225,13 @@ const adjustStyleClasses = computed(() => {
       break
     case 'auto':
     default:
-      // Fixed to large for better visibility in the new layout,
-      // can be changed to windowHeight based check if absolutely needed.
       isLarge = true
       break
   }
 
-  const icon = isLarge ? 'size-5' : 'size-3'
-  const border = isLarge ? 'border-2' : 'border-0'
-  const padding = isLarge ? 'p-2' : 'p-0.5'
+  const icon = isLarge ? 'size-[var(--island-icon)]' : 'size-3'
+  const border = isLarge ? 'border-[length:var(--island-border)]' : 'border-0'
+  const padding = isLarge ? 'p-[var(--island-pad)]' : 'p-0.5'
   return { icon, border, padding, button: `${border} ${padding}` }
 })
 
@@ -236,9 +255,13 @@ const islandMotionClasses = computed(() => {
     isHidden && !isTop.value ? 'translate-y-2' : '',
   ]
 })
+// A strip that no longer fits the window height is arranged along the edge the
+// Island is docked to, instead of being clipped.
 const mainControlsLayoutClasses = computed(() => [
   'flex gap-1',
-  isTop.value ? 'flex-col-reverse' : 'flex-col',
+  mainOverflowsHeight.value
+    ? 'flex-row'
+    : isTop.value ? 'flex-col-reverse' : 'flex-col',
 ])
 const panelPositionClasses = computed(() => {
   if (dock.value === 'top-left')
@@ -282,6 +305,7 @@ function resetMainWindowPosition() {
       islandPositionClasses,
       islandMotionClasses,
     ]"
+    :style="controlsIslandStyle"
   >
     <!-- Probes track viewport/rem sizes without adding scrollable overflow. -->
     <div aria-hidden="true" :class="['pointer-events-none invisible fixed size-0 overflow-hidden [contain:strict]']">
