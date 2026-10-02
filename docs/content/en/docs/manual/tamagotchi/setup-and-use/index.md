@@ -422,6 +422,18 @@ To import your own model, open **Model Selector** and use **Import**. The select
 - Spine models also use `.zip`; VRM uses a single `.vrm` file.
 :::
 
+::: tip Model selection is owned by the character card
+AIRI stores the model selection in the **character card**: when you pick or import a model in **Settings → Models**, AIRI writes that model into the active card, so the choice survives a restart.
+
+- Each card can bind a different model. Switching cards switches the model with it.
+- A card that does not specify a model falls back to the model recorded in the card defaults.
+- Only picking a model through the UI updates the card. If you change the runtime state directly (for example from a plugin or a script), the next start returns to the model stored in the card; pick it once in **Settings → Models** to make it stick.
+:::
+
+::: tip Importing from VTube Studio
+Compress the complete Live2D model folder as a ZIP file. Metadata such as `items_pinned_to_model.json` is ignored during import, so you do not need to remove it manually.
+:::
+
 #### If you select a Live2D model
 
 You can continue to adjust in the following order:

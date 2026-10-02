@@ -41,17 +41,13 @@ description: 为 Project AIRI 配置聊天、视觉、语音合成和语音识�
 模型设置位于 [设置] -> [模型] 中。
 
 ::: tip 正在从 VTuber Studio 导入模型？
-我们用于渲染 Live2D 模型的库，在读取由 VTuber Studio 打包的 ZIP 文件时可能会遇到问题，这是因为 VTuber Studio 使用了一些 Live2D 引擎无法识别的文件。
-因此，在导入之前，将 VTuber Studio 模型压缩为 ZIP 文件时，请确保排除以下文件：
-
--`items_pinned_to_model.json`
+把完整的 Live2D 模型文件夹压缩成 ZIP 文件即可导入。VTube Studio 使用的 `items_pinned_to_model.json` 等元数据文件会被自动忽略，不需要手动删除。
 :::
 
 <br />
 
-::: tip 现在还有一些 Bug
-目前模型场景重载功能尚未按预期工作。
-加载模型后，你需要重启 AIRI 才能生效。
+::: tip 关于模型改动
+舞台会自动响应模型设置的变更并重载渲染器。如果导入的模型本身加载失败，请先检查压缩包结构和素材文件，必要时再重启 AIRI。
 :::
 <br />
 
