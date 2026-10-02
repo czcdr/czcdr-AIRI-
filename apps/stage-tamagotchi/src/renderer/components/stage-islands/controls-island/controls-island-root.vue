@@ -26,8 +26,14 @@ const pendingDock = shallowRef<ControlsIslandDock>()
 const relocationTarget = shallowRef<ControlsIslandDock>()
 const motionPhase = shallowRef<ControlsIslandMotionPhase>('idle')
 
-/** The window must stay still for this period before the Island changes corners. */
-const placementSettleDelayMs = 1000
+/**
+ * How long the window has to stay still before the Island changes corners.
+ *
+ * Long enough that parking the window somewhere to work in it does not rearrange
+ * the controls, and that a drag across the desktop does not leave them moving
+ * after the user stopped.
+ */
+const placementSettleDelayMs = 2500
 
 /** The old corner fades out before the dock changes. */
 const placementLeaveDurationMs = 150

@@ -168,7 +168,7 @@ describe('resolveControlsIslandDock', () => {
 })
 
 describe('controlsIslandRoot', () => {
-  it('changes corners one second after the last window movement', async () => {
+  it('changes corners two and a half seconds after the last window movement', async () => {
     vi.useFakeTimers()
     const { host } = mountRoot()
 
@@ -183,7 +183,7 @@ describe('controlsIslandRoot', () => {
 
     windowBounds.x.value = 120
     await nextTick()
-    await vi.advanceTimersByTimeAsync(999)
+    await vi.advanceTimersByTimeAsync(2499)
 
     expect(readPlacement(host)).toEqual({
       dock: 'top-right',
@@ -232,7 +232,7 @@ describe('controlsIslandRoot', () => {
     frozen.value = true
     windowBounds.x.value = 100
     await nextTick()
-    await vi.advanceTimersByTimeAsync(1000)
+    await vi.advanceTimersByTimeAsync(2500)
 
     expect(readPlacement(host)).toEqual({
       dock: 'top-right',

@@ -42,8 +42,21 @@ export const FIT_SAFETY = 0.95
 /** A correction this small is not worth another round trip. */
 const SCALE_TOLERANCE = 0.01
 
+/**
+ * How far the size may sit from the target before a dragged frame is corrected.
+ *
+ * Wider than `SCALE_TOLERANCE` because this runs on every frame of a drag: the
+ * painted bounds move by a pixel or two on their own, and following that would
+ * make the character breathe while the user holds the edge.
+ */
+const TRACK_TOLERANCE = 0.015
+
 /** Bound on corrections per resize; each one is absolute, so one is typical. */
 const MAX_CORRECTIONS = 2
+
+/** How long to keep asking for a character that is still loading, and how often. */
+const MODEL_LOAD_RETRY = 500
+const MAX_LOAD_RETRIES = 40
 
 const wait = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms))
 
@@ -79,8 +92,12 @@ export function useProportionalStageScale(options: {
   const margins = options.margins ?? STAGE_FRAME_MARGINS
 
   let timer: ReturnType<typeof setTimeout> | undefined
+  /** Pending per-frame correction while the window is being dragged. */
+  let tracking: number | undefined
   /** Invalidates corrections that a newer resize has overtaken. */
   let generation = 0
+  /** Runs spent waiting for a model that has not been painted yet. */
+  let loadRetries = 0
 
   function currentScale() {
     const value = viewControl.scale.value
@@ -177,10 +194,18 @@ export function useProportionalStageScale(options: {
 
     let frame = readFrame()
     if (!frame) {
+      // The model is read out of storage and decoded after the stage mounts.
+      // Giving up here keeps whatever scale the last window left behind, so a
+      // character that closed small comes back small and stays small.
+      if (loadRetries++ < MAX_LOAD_RETRIES)
+        schedule(MODEL_LOAD_RETRY)
       return
     }
 
-    // A cut character cannot be measured 鈥?its bounds read as the window edge 鈥?    // so it is brought back into view before any size is taken from it.
+    loadRetries = 0
+
+    // A cut character cannot be measured — its bounds read as the window edge —
+    // so it is brought back into view before any size is taken from it.
     if (isArtClipped(frame)) {
       const revealed = await reveal(frame, stopped)
       if (!revealed || stopped()) {
@@ -224,10 +249,9 @@ export function useProportionalStageScale(options: {
       }
     }
 
-    // The last round can end on a frame measured while the stage was re-framing,
-    // which reads the character as smaller than it is and asks for a size that
-    // cuts it. A character left cut is the one outcome that must never happen, so
-    // it is checked once more and corrected from a frame that can be measured.
+    // The last round can end on a frame measured mid-repaint, which reads the
+    // character as smaller than it is and asks for a size that cuts it. Being
+    // left cut must never happen, so it is checked once more.
     const final = readFrame()
     if (final && isArtClipped(final)) {
       const revealed = await reveal(final, stopped)
@@ -239,6 +263,33 @@ export function useProportionalStageScale(options: {
       if (Number.isFinite(target) && target > 0 && Math.abs(target - current) / current > SCALE_TOLERANCE)
         await applyScale(target)
     }
+  }
+
+  /**
+   * Moves the character with the frame the window is dragged through.
+   *
+   * Waiting for the drag to pause lets the stage re-frame the model on its own:
+   * the character drifts out of the window and is cut, then jumps back once the
+   * user stops, one jump per waypoint. A measurement costs about a millisecond,
+   * so the size the frame asks for is set on every dragged frame instead.
+   */
+  function track() {
+    if (options.suspended?.())
+      return
+
+    const frame = readFrame()
+    if (!frame)
+      return
+
+    const target = fitScale(frame)
+    const current = currentScale()
+    if (!Number.isFinite(target) || target <= 0)
+      return
+
+    if (Math.abs(target - current) / current <= TRACK_TOLERANCE)
+      return
+
+    viewControl.set('scale', target)
   }
 
   function schedule(delay = RESIZE_DEBOUNCE) {
@@ -256,7 +307,19 @@ export function useProportionalStageScale(options: {
     }, delay)
   }
 
-  useEventListener('resize', () => schedule())
+  useEventListener('resize', () => {
+    // One correction per painted frame, however many resize events arrive.
+    if (tracking === undefined) {
+      tracking = requestAnimationFrame(() => {
+        tracking = undefined
+        track()
+      })
+    }
+
+    // The full solve waits until the drag stops, so a hundred resize events
+    // produce one converging correction instead of a hundred of them.
+    schedule()
+  })
 
   onMounted(() => {
     // The stage mounts with the window, and a model may still be loading. The
@@ -268,6 +331,8 @@ export function useProportionalStageScale(options: {
     generation++
     if (timer)
       clearTimeout(timer)
+    if (tracking !== undefined)
+      cancelAnimationFrame(tracking)
   })
 
   if (options.model)

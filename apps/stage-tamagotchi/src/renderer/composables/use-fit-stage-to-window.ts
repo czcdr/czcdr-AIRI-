@@ -14,7 +14,7 @@ import { FIT_SAFETY, STAGE_FRAME_MARGINS } from './use-proportional-stage-scale'
  * Mirrors `MAIN_WINDOW_MIN_WIDTH`/`MAIN_WINDOW_MIN_HEIGHT` in
  * `src/main/windows/main/index.ts`. The window manager clamps anything smaller,
  * so asking for less would leave the fit working from a size the window never
- * took 鈥?which is how a fit used to end with the character against an edge.
+ * took — which is how a fit used to end with the character against an edge.
  */
 const MIN_WINDOW_WIDTH = 240
 const MIN_WINDOW_HEIGHT = 200

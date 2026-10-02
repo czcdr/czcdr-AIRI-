@@ -32,6 +32,10 @@ export interface StageArtBounds {
 
 let surface: StageSurface | undefined
 
+/** Reused between measurements; see `measureStageArtBounds`. */
+let scratchCanvas: HTMLCanvasElement | undefined
+let scratchContext: CanvasRenderingContext2D | null | undefined
+
 export function publishStageSurface(value: StageSurface | undefined) {
   surface = value
 }
@@ -92,11 +96,16 @@ export function measureStageArtBounds(options?: {
   const height = Math.max(1, Math.round(canvas.height / scale))
   const alphaThreshold = options?.alphaThreshold ?? 40
 
-  const scratch = document.createElement('canvas')
-  scratch.width = width
-  scratch.height = height
+  // One scratch canvas for the lifetime of the page: a resize asks for a
+  // measurement on every frame it is dragged, and a fresh canvas and 2D context
+  // per call is garbage the renderer then has to collect mid-drag.
+  const scratch = scratchCanvas ??= document.createElement('canvas')
+  if (scratch.width !== width)
+    scratch.width = width
+  if (scratch.height !== height)
+    scratch.height = height
 
-  const context = scratch.getContext('2d', { willReadFrequently: true })
+  const context = scratchContext ??= scratch.getContext('2d', { willReadFrequently: true })
   if (!context)
     return undefined
 

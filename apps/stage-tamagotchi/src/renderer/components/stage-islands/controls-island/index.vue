@@ -196,18 +196,24 @@ function toggleControls() {
 // controls, and never grows past the size it always had. The root below sets
 // `--island-*`, which every control in the Island inherits.
 //
-// The floor is the size a control stays clickable at: 0.8 of the reference
-// keeps a 1rem icon inside a button tall enough to hit, and the strip rearranges
-// along the window edge (`mainOverflowsHeight`) rather than going below it. A
-// smaller floor was measured on screen as a row of dots too small to aim at.
+// Both dimensions count, against the size the window opens at, and the tighter
+// one decides: a window dragged only wider has no more room for a column of
+// controls either, and following the height alone left the strip sitting still
+// while the window grew around it. The floor is the size a control stays
+// clickable at, and the strip rearranges along the window edge
+// (`mainOverflowsHeight`) rather than going below it.
+const controlsIslandReferenceWidth = 450
 const controlsIslandReferenceHeight = 600
 const controlsIslandMinScale = 0.8
 const controlsIslandMaxScale = 1
 
-const { height: windowHeight } = useWindowSize()
+const { height: windowHeight, width: windowWidth } = useWindowSize()
 
 const controlsIslandScale = computed(() => {
-  const raw = windowHeight.value / controlsIslandReferenceHeight
+  const raw = Math.min(
+    windowWidth.value / controlsIslandReferenceWidth,
+    windowHeight.value / controlsIslandReferenceHeight,
+  )
   return Math.min(controlsIslandMaxScale, Math.max(controlsIslandMinScale, raw))
 })
 

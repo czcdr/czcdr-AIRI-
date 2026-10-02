@@ -20,8 +20,16 @@ export interface ResolveControlsIslandDockOptions {
   windowBounds: Rectangle
 }
 
-/** The half-width of the center band that prevents repeated flips near an axis. */
-const displayCenterDeadZoneRatio = 0.05
+/**
+ * Half-width of the center band that prevents repeated flips near an axis.
+ *
+ * A window parked near the display center flips corners on every small move,
+ * and each flip is a fade out, a corner change and a fade in. The band is a
+ * tenth of the work area, so the window has to be clearly inside a quadrant
+ * before the Island follows it there, and the same band has to be crossed back
+ * before it returns.
+ */
+const displayCenterDeadZoneRatio = 0.1
 
 /**
  * Resolves the window corner in the same quadrant as its display position.
