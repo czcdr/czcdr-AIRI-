@@ -195,8 +195,13 @@ function toggleControls() {
 // The Island follows the window size so a small window keeps a usable strip of
 // controls, and never grows past the size it always had. The root below sets
 // `--island-*`, which every control in the Island inherits.
+//
+// The floor is the size a control stays clickable at: 0.8 of the reference
+// keeps a 1rem icon inside a button tall enough to hit, and the strip rearranges
+// along the window edge (`mainOverflowsHeight`) rather than going below it. A
+// smaller floor was measured on screen as a row of dots too small to aim at.
 const controlsIslandReferenceHeight = 600
-const controlsIslandMinScale = 0.7
+const controlsIslandMinScale = 0.8
 const controlsIslandMaxScale = 1
 
 const { height: windowHeight } = useWindowSize()
