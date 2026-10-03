@@ -41,14 +41,30 @@ export interface StageArtBounds {
   height: number
 }
 
-/** Gaps the character keeps from the window edges, in CSS pixels. */
+/**
+ * Gaps the character keeps from the window edges.
+ *
+ * The fixed part keeps the drawn edge off the window border at any size. The
+ * share parts are what make the margin a margin rather than a guess: the painted
+ * silhouette breathes — measured over half a minute, this model's left edge
+ * moved nineteen pixels on a character five hundred wide, and its head nine on
+ * one that stood four hundred and sixty tall — and a gap that does not grow with
+ * the character is crossed by that movement once the character is large. A share
+ * of the character therefore holds the pose inside the frame at every size, which
+ * is what lets the character take the whole room instead of stopping a fixed
+ * percentage short of it.
+ */
 export interface StageFrameMargins {
-  /** Gap on the left and right edges. */
+  /** Fixed gap on the left and right edges, in CSS pixels. */
   side: number
-  /** Gap on the top edge. */
+  /** Fixed gap on the top edge, in CSS pixels. */
   top: number
   /** Extra height below the cut line, so the window is not flush with it. */
   bottom: number
+  /** Share of the painted width added to the side gap. */
+  sideShare?: number
+  /** Share of the visible height added to the top gap. */
+  topShare?: number
 }
 
 /** One measurement of the window and the character painted inside it. */
@@ -99,6 +115,33 @@ export function isArtClipped(frame: StageFrame, epsilon = ART_CLIP_EPSILON): boo
 }
 
 /**
+ * True when the window cuts the character on both sides, so its size is unknown.
+ *
+ * Only this makes a measurement unusable: the painted width is then the window's
+ * width whatever the character is, and the margin arithmetic has nothing to work
+ * from. A character that merely grazes an edge — which the pose does on its own,
+ * a few times a minute — still measures exactly, and is answered by the ordinary
+ * target rather than by being made smaller.
+ */
+export function isArtWidthSaturated(frame: StageFrame, epsilon = ART_CLIP_EPSILON) {
+  return frame.art.x <= epsilon
+    && frame.art.x + frame.art.width >= frame.width - epsilon
+}
+
+/**
+ * The margins that apply to a character this size.
+ *
+ * Every rule below works from these rather than from the fixed gaps alone, so a
+ * caller cannot forget the share that holds the pose inside the frame.
+ */
+export function marginsForFrame(frame: StageFrame, margins: StageFrameMargins): StageFrameMargins {
+  const side = margins.side + frame.art.width * (margins.sideShare ?? 0)
+  const top = margins.top + artVisibleHeight(frame) * (margins.topShare ?? 0)
+
+  return { side, top, bottom: margins.bottom }
+}
+
+/**
  * How much the user scale may still grow before the character reaches a margin.
  *
  * `1` means the character already touches a margin, a value below `1` means it
@@ -111,9 +154,10 @@ export function isArtClipped(frame: StageFrame, epsilon = ART_CLIP_EPSILON): boo
  */
 export function growthToMargins(frame: StageFrame, margins: StageFrameMargins): number {
   const { width, height, art } = frame
+  const gaps = marginsForFrame(frame, margins)
   const anchorX = width / 2
-  const roomSide = anchorX - margins.side
-  const roomTop = height - margins.top
+  const roomSide = anchorX - gaps.side
+  const roomTop = height - gaps.top
   const limits: number[] = []
 
   // Left edge: moving away from the anchor, the art's left side heads for 0.
@@ -185,9 +229,10 @@ export function wrappedWindowSize(
 ): { width: number, height: number } {
   const share = fill > 0 && fill <= 1 ? fill : 1
   const offCentre = Math.abs(artCenterOffsetX(frame))
+  const gaps = marginsForFrame(frame, margins)
 
   return {
-    width: frame.art.width / share + offCentre * 2 + margins.side * 2,
-    height: artVisibleHeight(frame) / share + margins.top + margins.bottom,
+    width: frame.art.width / share + offCentre * 2 + gaps.side * 2,
+    height: artVisibleHeight(frame) / share + gaps.top + gaps.bottom,
   }
 }

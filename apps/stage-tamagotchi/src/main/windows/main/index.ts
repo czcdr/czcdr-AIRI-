@@ -22,7 +22,7 @@ import { defineInvokeHandler } from '@moeru/eventa'
 import { createContext } from '@moeru/eventa/adapters/electron/main'
 import { initScreenCaptureForWindow } from '@proj-airi/electron-screen-capture/main'
 import { defu } from 'defu'
-import { BrowserWindow, ipcMain } from 'electron'
+import { BrowserWindow, ipcMain, screen } from 'electron'
 import { isLinux, isMacOS } from 'std-env'
 import { array, number, object, optional, string } from 'valibot'
 
@@ -162,6 +162,48 @@ export async function setupMainWindow(params: {
 
   window.on('resize', () => handleNewBounds(window.getBounds()))
   window.on('move', () => handleNewBounds(window.getBounds()))
+
+  /**
+   * Keeps the stage reachable on a display.
+   *
+   * The window is transparent and frameless, so once part of it is dragged past
+   * an edge there is nothing there to grab: the controls Island is docked to one
+   * of its corners, so a corner left outside the work area takes the Island with
+   * it and the only way back is the taskbar menu. The whole window is therefore
+   * brought back inside the display it is mostly on — measured after the drag, so
+   * the window does not pull itself out from under the cursor.
+   *
+   * A resize is left alone on purpose: an edge the user drags must stay under the
+   * pointer, and moving the window then would read as the other edge running away.
+   */
+  let keepOnDisplayTimer: ReturnType<typeof setTimeout> | undefined
+  function keepOnDisplay() {
+    if (window.isDestroyed())
+      return
+
+    const bounds = window.getBounds()
+    const area = screen.getDisplayMatching(bounds).workArea
+    const width = Math.min(bounds.width, area.width)
+    const height = Math.min(bounds.height, area.height)
+    const x = Math.round(Math.min(Math.max(bounds.x, area.x), area.x + area.width - width))
+    const y = Math.round(Math.min(Math.max(bounds.y, area.y), area.y + area.height - height))
+
+    if (x !== bounds.x || y !== bounds.y)
+      window.setBounds({ ...bounds, x, y, width: bounds.width, height: bounds.height })
+  }
+
+  function scheduleKeepOnDisplay() {
+    if (keepOnDisplayTimer)
+      clearTimeout(keepOnDisplayTimer)
+
+    // A programmatic move does not end with the event a drag does, so both paths
+    // settle through the same timer.
+    keepOnDisplayTimer = setTimeout(keepOnDisplay, 400)
+  }
+
+  window.on('move', scheduleKeepOnDisplay)
+  window.on('moved', keepOnDisplay)
+
   window.on('close', (event) => {
     if (allowClose) {
       return

@@ -46,10 +46,18 @@ function resolveMaxFps(limit?: number) {
 /** Draws a frame the way the ticker does, so every caller shares one error path. */
 let renderStage: (() => void) | undefined
 
+/**
+ * Counts frames this canvas has painted. Window fitting compares it across a
+ * change to tell a canvas that repainted from one that is frozen behind an
+ * occluded window — the two answer measurements identically otherwise.
+ */
+const paintedFrames = { value: 0 }
+
 function installRenderGuard(app: Application) {
   const guardedRender = () => {
     try {
       app.render()
+      paintedFrames.value++
     }
     catch (error) {
       console.error('[Live2D] Pixi render error.', error)
@@ -105,7 +113,7 @@ async function initLive2DPixiStage(parent: HTMLDivElement) {
 
   // The stage paints the character the window is sized around, so its canvas is
   // published here rather than looked up in the DOM by whoever needs to measure it.
-  publishStageSurface({ canvas: pixiAppCanvas.value, resolution: props.resolution })
+  publishStageSurface({ canvas: pixiAppCanvas.value, resolution: props.resolution, frame: paintedFrames })
 
   await syncBackground()
 }

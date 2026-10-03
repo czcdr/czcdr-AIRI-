@@ -12,6 +12,16 @@ export interface StageSurface {
   canvas: HTMLCanvasElement
   /** Canvas pixels per CSS pixel: the stage renders at `settings/live2d/render-scale`. */
   resolution: number
+  /**
+   * Bumped by the renderer every time it actually paints a frame.
+   *
+   * A window that is resized while occluded or minimized keeps answering
+   * measurements with the last painted frame, which looks exactly like a real
+   * (sometimes clipped) painting — acting on it walked the model scale down to
+   * nothing. Comparing this counter before and after a change is the only
+   * reliable way to know the canvas really shows that change.
+   */
+  frame?: { value: number }
 }
 
 export interface StageSurfaceViewport {
@@ -50,6 +60,16 @@ export function releaseStageSurface(canvas: HTMLCanvasElement | undefined) {
 
 export function getStageSurface() {
   return surface
+}
+
+/**
+ * How many frames the stage has painted so far, or `undefined` when the
+ * surface does not report them. A caller records the count before changing
+ * something and waits for it to advance: until it does, measurements still
+ * describe the old painting and must not be acted on.
+ */
+export function getStageFrameCount(value: StageSurface | undefined = surface): number | undefined {
+  return value?.frame?.value
 }
 
 export function getStageViewport(value: StageSurface | undefined = surface): StageSurfaceViewport | undefined {

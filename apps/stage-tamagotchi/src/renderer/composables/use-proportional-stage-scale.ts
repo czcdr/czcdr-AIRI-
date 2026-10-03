@@ -2,17 +2,23 @@ import type { WatchSource } from 'vue'
 
 import type { StageFrame, StageFrameMargins } from './stage-frame-geometry'
 
-import { getStageViewport, measureStageArtBounds, useL2dViewControl } from '@proj-airi/stage-ui-live2d'
+import { getStageFrameCount, getStageViewport, measureStageArtBounds, useL2dViewControl } from '@proj-airi/stage-ui-live2d'
 import { useEventListener } from '@vueuse/core'
 import { onMounted, onScopeDispose, watch } from 'vue'
 
-import { framesAgree, isArtClipped, scaleForMargins } from './stage-frame-geometry'
+import { framesAgree, isArtWidthSaturated, scaleForMargins } from './stage-frame-geometry'
 
 /**
- * Margin the character keeps from the window edge, in CSS pixels. Mirrors the
- * window fit so a resize never grows the character into the frame it just left.
+ * Gaps the character keeps from the window edge.
+ *
+ * The fixed part keeps the drawn edge off the border; the shares are what holds
+ * the pose inside it. The character breathes, so its painted silhouette moves —
+ * measured over half a minute, this model's left edge travelled nineteen pixels
+ * on a character five hundred wide. A fixed gap is crossed by that movement once
+ * the character is large enough, which is why the margins grow with the character
+ * and the character may then take the whole room between them.
  */
-export const STAGE_FRAME_MARGINS: StageFrameMargins = { side: 10, top: 12, bottom: 6 }
+export const STAGE_FRAME_MARGINS: StageFrameMargins = { side: 10, top: 12, bottom: 6, sideShare: 0.04, topShare: 0.02 }
 
 /** A resize settles before the character is re-measured; dragging emits many. */
 const RESIZE_DEBOUNCE = 120
@@ -22,6 +28,19 @@ const SCALE_APPLY_DELAY = 90
 /** How long the canvas is given to repaint after a scale change. */
 const STAGE_SETTLE_TIMEOUT = 600
 const STAGE_SETTLE_INTERVAL = 40
+
+/**
+ * How long to wait for the canvas to paint a change, and how often to look.
+ *
+ * This is a counter read, not a measurement, so asking often costs nothing: the
+ * renderer reports how many frames it has drawn, and one that has not moved means
+ * the window is occluded and nothing is being painted at all. Every correction
+ * waits on it, because a measurement taken from a canvas that did not repaint
+ * describes the size from before the change — acting on that is what walked the
+ * character down to a speck.
+ */
+const PAINT_WAIT = 700
+const PAINT_POLL = 30
 
 /**
  * How a cut character is brought back into view.
@@ -39,16 +58,14 @@ const MIN_RECOVERED_SHARE = 0.4
 const MIN_RECOVER_STEP = 0.005
 
 /**
- * The target stops this far short of the margins.
+ * The target sits exactly on the margins.
  *
- * The character breathes, blinks and moves, and its painted silhouette changes
- * with the pose: measured over half a minute at one size, this model's painted
- * width swings by about four and a half percent and its left edge by nineteen
- * pixels. A target on the exact margin would be cut by the next pose, and "never
- * cut the character" outranks the last few pixels of size. The window fit uses
- * the same share, so the two agree on where the character belongs.
+ * It used to stop five percent short of them, because a fixed gap cannot hold a
+ * silhouette that breathes. The margins grow with the character now, so the pose
+ * is held by the margin itself and the last five percent of size is the
+ * character's to keep.
  */
-export const FIT_SAFETY = 0.95
+export const FIT_SAFETY = 1
 
 /** A correction this small is not worth another round trip. */
 const SCALE_TOLERANCE = 0.01
@@ -120,15 +137,30 @@ export function useProportionalStageScale(options: {
    * nothing is corrected.
    */
   let awaitingPaint: { artWidth: number } | undefined
+  /** The frame count at the last correction, where the surface reports one. */
+  let paintedAt: number | undefined
 
   /** True once the canvas has painted something new since the last correction. */
   function paintCaughtUp(frame: StageFrame) {
+    // The renderer counts the frames it draws, which answers this exactly: a
+    // window that is not painting keeps handing back the same count however much
+    // time passes, and no frame it produces can be told apart from the old one.
+    const painted = getStageFrameCount()
+    if (painted !== undefined) {
+      if (paintedAt === undefined || painted !== paintedAt) {
+        paintedAt = undefined
+        return true
+      }
+
+      return false
+    }
+
     if (!awaitingPaint)
       return true
 
     // A cut character is painted to the window edge, so its bounds cannot move
     // however the scale changed; that is not evidence either way.
-    if (isArtClipped(frame))
+    if (isArtWidthSaturated(frame))
       return true
 
     if (Math.abs(frame.art.width - awaitingPaint.artWidth) > Math.max(1, awaitingPaint.artWidth * 0.005)) {
@@ -141,6 +173,12 @@ export function useProportionalStageScale(options: {
 
   /** Records a correction whose repaint the next measurement has to show. */
   function rememberApply(frame: StageFrame) {
+    const painted = getStageFrameCount()
+    if (painted !== undefined) {
+      paintedAt = painted
+      return
+    }
+
     awaitingPaint = { artWidth: frame.art.width }
   }
 
@@ -189,8 +227,35 @@ export function useProportionalStageScale(options: {
     return frame
   }
 
+  /**
+   * Waits for the canvas to paint a frame counted after `since`.
+   *
+   * The renderer reports how many frames it has drawn. A window that is hidden or
+   * covered stops drawing, and every measurement then describes the frame it
+   * stopped on: the character reads as cut however small it is made, and a
+   * correction taken from it steps down again and again. Reading a counter costs
+   * nothing, so this is asked before any decision that follows a change.
+   */
+  async function waitForPaint(since: number | undefined, timeout = PAINT_WAIT) {
+    if (since === undefined)
+      return true
+
+    const deadline = Date.now() + timeout
+    while (Date.now() < deadline) {
+      await wait(PAINT_POLL)
+      const now = getStageFrameCount()
+      if (now === undefined || now !== since)
+        return true
+    }
+
+    return false
+  }
+
+  /** Sets the user scale, and reports whether the canvas painted it. */
   async function applyScale(value: number) {
+    const painted = getStageFrameCount()
     viewControl.set('scale', value)
+    return waitForPaint(painted)
   }
 
   /**
@@ -200,37 +265,48 @@ export function useProportionalStageScale(options: {
    * or two later, so a measurement taken straight away describes the size the
    * character had *before* the change. Reading that as the result makes the next
    * round repeat the correction, which is how a resize used to take a little off
-   * the character every time it was measured. This waits for the painted width to
-   * move most of the way to the size the new scale asks for.
+   * the character every time it was measured.
+   *
+   * The frame counter answers this exactly. Where a surface does not report one,
+   * the painted bounds stand in for it: they move with the scale unless the
+   * character is cut, in which case the top edge still does.
    */
   async function frameAfterApply(before: StageFrame, scale: number) {
-    // A cut character is painted to the window edge, so its bounds cannot move
-    // until it fits: waiting would spend the whole timeout on every recovery
-    // step, and that result is then read as "the scale did not apply".
-    if (isArtClipped(before)) {
-      await wait(SCALE_APPLY_DELAY)
-      return readFrame()
-    }
-
+    const painted = getStageFrameCount()
     const expected = before.art.width * (scale / before.scale)
-    const threshold = Math.max(1, Math.abs(expected - before.art.width) * 0.5)
+    const threshold = Math.max(1, Math.abs(expected - before.art.width) * 0.4)
+    const moved = (frame: StageFrame | undefined) => Boolean(frame) && (
+      Math.abs(frame!.art.width - before.art.width) >= threshold
+      || Math.abs(frame!.art.y - before.art.y) >= 2
+    )
+
     const deadline = Date.now() + STAGE_SETTLE_TIMEOUT
 
     await wait(SCALE_APPLY_DELAY)
 
     let frame = readFrame()
     while (Date.now() < deadline) {
-      if (frame && Math.abs(frame.art.width - before.art.width) >= threshold)
+      if (painted !== undefined) {
+        if (getStageFrameCount() !== painted) {
+          // The counter moved, so what is on screen is the size the change asked
+          // for — measure *that*, not the frame read before it. Handing back the
+          // earlier one describes the size from before the change, and the round
+          // after it corrects for a size that no longer exists.
+          await wait(SCALE_APPLY_DELAY)
+          return readFrame()
+        }
+      }
+      else if (moved(frame)) {
         return frame
+      }
 
       await wait(STAGE_SETTLE_INTERVAL)
       frame = readFrame()
     }
 
-    // The canvas never painted the change: a hidden or covered window stops
-    // painting, and the frame it left behind still describes the old size. Solving
-    // from it asks for the same correction again, and again, walking the character
-    // down while it lasts. Say so instead.
+    // The canvas never painted the change, so the frame it left behind still
+    // describes the old size: solving from it asks for the same correction again,
+    // and again, walking the character down while it lasts. Say so instead.
     return undefined
   }
 
@@ -249,7 +325,7 @@ export function useProportionalStageScale(options: {
     const floor = currentScale() * MIN_RECOVERED_SHARE
     let current: StageFrame | undefined = frame
 
-    for (let step = 0; current && isArtClipped(current) && step < MAX_RECOVER_STEPS; step++) {
+    for (let step = 0; current && isArtWidthSaturated(current) && step < MAX_RECOVER_STEPS; step++) {
       if (stopped?.())
         return undefined
 
@@ -260,11 +336,16 @@ export function useProportionalStageScale(options: {
       if (!(scale - target > scale * MIN_RECOVER_STEP))
         break
 
-      await applyScale(target)
+      // A step the canvas never painted leaves the next measurement describing the
+      // size from before it, and another step taken from that walks the character
+      // down for as long as the window stays unpainted.
+      if (!await applyScale(target))
+        return undefined
+
       current = await frameAfterApply(before, target)
     }
 
-    return current && !isArtClipped(current) ? current : undefined
+    return current && !isArtWidthSaturated(current) ? current : undefined
   }
 
   /**
@@ -308,7 +389,7 @@ export function useProportionalStageScale(options: {
 
     // A cut character cannot be measured — its bounds read as the window edge —
     // so it is brought back into view before any size is taken from it.
-    if (isArtClipped(frame)) {
+    if (isArtWidthSaturated(frame)) {
       const recovered = await recover(frame, stopped)
       if (!recovered || stopped()) {
         return
@@ -329,13 +410,12 @@ export function useProportionalStageScale(options: {
 
       // The frame is measured at the scale it is painted at, so a target that
       // matches it means the character is already where this window wants it.
-      if (!isArtClipped(frame) && off <= SCALE_TOLERANCE) {
+      if (!isArtWidthSaturated(frame) && off <= SCALE_TOLERANCE) {
         return
       }
 
       rememberApply(frame)
-      await applyScale(target)
-      if (stopped()) {
+      if (!await applyScale(target) || stopped()) {
         return
       }
 
@@ -347,7 +427,7 @@ export function useProportionalStageScale(options: {
         return
 
       frame = settled
-      if (isArtClipped(frame)) {
+      if (isArtWidthSaturated(frame)) {
         const recovered = await recover(frame, stopped)
         if (!recovered || stopped())
           return
@@ -359,7 +439,7 @@ export function useProportionalStageScale(options: {
     // character as smaller than it is and asks for a size that cuts it. Being
     // left cut must never happen, so it is checked once more.
     const final = readFrame()
-    if (final && isArtClipped(final)) {
+    if (final && isArtWidthSaturated(final)) {
       const recovered = await recover(final, stopped)
       if (!recovered || stopped())
         return
@@ -370,7 +450,6 @@ export function useProportionalStageScale(options: {
         await applyScale(target)
     }
   }
-
   /**
    * Moves the character with the frame the window is dragged through.
    *
