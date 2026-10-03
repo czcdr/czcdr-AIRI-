@@ -73,11 +73,17 @@ const SCALE_TOLERANCE = 0.01
 /**
  * How far the size may sit from the target before a dragged frame is corrected.
  *
- * Wider than `SCALE_TOLERANCE` because this runs on every frame of a drag: the
- * painted bounds move by a pixel or two on their own, and following that would
- * make the character breathe while the user holds the edge.
+ * Asymmetric on purpose. Making the character smaller is what brings one back
+ * inside a window edge it has reached, so it answers a modest deviation at once.
+ * Making it larger only follows the edge the user is dragging, which can wait for
+ * a real deficit — and the waiting is what keeps the pose out of the size: the
+ * painted silhouette swings by about four percent, so a correction answered at
+ * that size asks for a different one on the very next frame, and the character
+ * twitches between the two until the pose happens to hold still. Answered this
+ * way it settles at the size the widest pose asked for and stays there.
  */
-const TRACK_TOLERANCE = 0.015
+const SHRINK_TOLERANCE = 0.02
+const GROW_TOLERANCE = 0.08
 
 /** Bound on corrections per resize; each one is absolute, so one is typical. */
 const MAX_CORRECTIONS = 2
@@ -480,7 +486,7 @@ export function useProportionalStageScale(options: {
     if (!Number.isFinite(target) || target <= 0)
       return
 
-    if (Math.abs(target - current) / current <= TRACK_TOLERANCE)
+    if (Math.abs(target - current) / current <= (target < current ? SHRINK_TOLERANCE : GROW_TOLERANCE))
       return
 
     rememberApply(frame)
