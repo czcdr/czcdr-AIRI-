@@ -6,7 +6,7 @@ import { getStageFrameCount, getStageViewport, measureStageArtBounds, useL2dView
 import { useEventListener } from '@vueuse/core'
 import { onMounted, onScopeDispose, watch } from 'vue'
 
-import { framesAgree, isArtWidthSaturated, scaleForMargins } from './stage-frame-geometry'
+import { framesAgree, isArtClipped, isArtWidthSaturated, scaleForMargins } from './stage-frame-geometry'
 
 /**
  * Gaps the character keeps from the window edge.
@@ -420,6 +420,16 @@ export function useProportionalStageScale(options: {
         return
       }
 
+      // A lean or a graze is not a reason to make the character smaller. The pose
+      // moves the silhouette several percent sideways, and shrinking cannot move
+      // it back to the middle — it only takes a little off the size every time the
+      // pose leans, which is how a character that was merely off centre kept
+      // coming out smaller. Only one that has actually reached the window edge is
+      // made smaller; the margins hold everything else.
+      if (target < current && !isArtClipped(frame)) {
+        return
+      }
+
       rememberApply(frame)
       if (!await applyScale(target) || stopped()) {
         return
@@ -487,6 +497,14 @@ export function useProportionalStageScale(options: {
       return
 
     if (Math.abs(target - current) / current <= (target < current ? SHRINK_TOLERANCE : GROW_TOLERANCE))
+      return
+
+    // The same rule as the settle: a pose that leans sideways is not a reason to
+    // make the character smaller, and a smaller correction answered from a lean
+    // reads as a different one on the next frame — the twitch the user saw while
+    // holding the border. Only a character that has reached the window edge is
+    // made smaller; the margins hold a lean.
+    if (target < current && !isArtClipped(frame))
       return
 
     rememberApply(frame)

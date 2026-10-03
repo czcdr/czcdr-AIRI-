@@ -20,14 +20,6 @@ const MIN_WINDOW_WIDTH = 240
 const MIN_WINDOW_HEIGHT = 200
 
 /**
- * Corrections below these thresholds are not worth another round trip.
- *
- * The character keeps moving while the fit runs, and its painted width swings by
- * a few percent with the pose, so a tighter bound than the pose itself would
- * never be reached and the fit would spend every round chasing the animation.
- */
-const SCALE_TOLERANCE = 0.025
-/**
  * How far the character may sit from where the fit would put it.
  *
  * The painted centre moves by several pixels with the pose, and acting on that
@@ -48,9 +40,6 @@ const RESTORE_SHARE = 0.97
  * had already fitted.
  */
 const BOUNDS_TOLERANCE_RATIO = 0.1
-
-/** Bound on measurement rounds; each one is absolute, so one is typical. */
-const MAX_PASSES = 8
 
 /** Longest a fit may run before its control is handed back. */
 const FIT_TIMEOUT = 20000
@@ -325,70 +314,50 @@ export function useFitStageToWindow(options: { margins?: StageFrameMargins } = {
       }
       const artWidth = visible.art.width
 
+      // The pose swings the painted width several percent within a moment, and a
+      // window wrapped around one narrow reading is crossed by the next pose —
+      // which is what used to leave the head against the top edge and call a
+      // correction on the size. The window is therefore wrapped around the widest
+      // of a few quick readings: a pose the character has just shown is one it can
+      // show again, so the window it leaves holds it.
+      let wrappedAround = visible
+      for (let sample = 0; sample < 3; sample++) {
+        await wait(MODEL_SETTLE_DELAY)
+        const next = readFrame()
+        if (next && next.width === visible.width && next.height === visible.height && next.art.width > wrappedAround.art.width)
+          wrappedAround = next
+      }
+
       // Step 3: keep the character's pixel size, wrap the window around it, and
       // hold its place on screen.
       //
-      // The window is placed once, and only the size is corrected after that.
-      // Placing it again from the character as it looks after each correction
-      // makes the two chase each other — the stage re-frames the model for the new
-      // window, which changes the size, which asks for another correction — and a
-      // fit used to walk the character a few percent down on every pass.
-      let placed = false
+      // One measurement, one placement. The character as it was read at the click
+      // is the whole of the fit: the window is wrapped around it once, and the
+      // character is never resized here — a size correction belongs to the resize
+      // path, which settles the character into whatever window this leaves.
+      //
+      // Re-reading inside a loop and acting again is how a fit used to walk the
+      // character down: the pose swings the painted size several percent between
+      // readings, so every round asked for a slightly different window, the stage
+      // re-framed the model for each one, and the next click measured a different
+      // character again.
+      const wrapped = wrappedWindowSize(wrappedAround, margins, FIT_SAFETY)
+      const target = place(art, wrappedAround, {
+        width: Math.max(MIN_WINDOW_WIDTH, Math.round(wrapped.width)),
+        height: Math.max(MIN_WINDOW_HEIGHT, Math.round(wrapped.height)),
+      })
 
-      for (let pass = 0; pass < MAX_PASSES; pass++) {
-        const current = await readStableFrame()
-        if (!current)
-          break
+      // A window that already holds the character with its margins is left where
+      // it is: the painted centre and size move by a few percent with the pose,
+      // and placing the window again for every such reading — and again on the
+      // next click — walks it a little further out each time.
+      const wiggleX = Math.max(POSITION_TOLERANCE, target.width * POSITION_TOLERANCE_RATIO)
+      const boundsOk = Math.abs(before.x - target.x) <= wiggleX
+        && Math.abs(before.y - target.y) <= wiggleX
+        && Math.abs(before.width - target.width) <= Math.max(BOUNDS_TOLERANCE, target.width * BOUNDS_TOLERANCE_RATIO)
+        && Math.abs(before.height - target.height) <= Math.max(BOUNDS_TOLERANCE, target.height * BOUNDS_TOLERANCE_RATIO)
 
-        if (isArtWidthSaturated(current)) {
-          // A cut character cannot be measured, so the step comes from the margins
-          // instead: a few percent at a time, never below the floor. The round
-          // after it reaches the exact size again.
-          const scale = Math.max(currentScale() * MIN_RECOVERED_SHARE, scaleForMargins(current, margins) * FIT_SAFETY)
-          await applyScale(scale)
-          if (!await frameAfterApply(current, scale))
-            break
-          continue
-        }
-
-        const bounds = await getBounds()
-        if (!bounds || !bounds.width)
-          break
-
-        const wrapped = wrappedWindowSize(current, margins, FIT_SAFETY)
-        const target = place(art, current, {
-          width: Math.max(MIN_WINDOW_WIDTH, Math.round(wrapped.width)),
-          height: Math.max(MIN_WINDOW_HEIGHT, Math.round(wrapped.height)),
-        })
-
-        const sizeFix = artWidth / current.art.width
-        const sizeOk = !Number.isFinite(sizeFix) || Math.abs(sizeFix - 1) <= SCALE_TOLERANCE
-        // A window that already holds the character with its margins is left where
-        // it is: the painted centre and size move by a few percent with the pose,
-        // and placing the window again for every such reading — and again on the
-        // next click — walks it a little further out each time.
-        const wiggleX = Math.max(POSITION_TOLERANCE, target.width * POSITION_TOLERANCE_RATIO)
-        const boundsOk = Math.abs(bounds.x - target.x) <= wiggleX
-          && Math.abs(bounds.y - target.y) <= wiggleX
-          && Math.abs(bounds.width - target.width) <= Math.max(BOUNDS_TOLERANCE, target.width * BOUNDS_TOLERANCE_RATIO)
-          && Math.abs(bounds.height - target.height) <= Math.max(BOUNDS_TOLERANCE, target.height * BOUNDS_TOLERANCE_RATIO)
-
-        if (sizeOk && boundsOk)
-          break
-
-        // The size comes first: the window was placed around the size it asks for.
-        if (!sizeOk) {
-          const scale = current.scale * sizeFix
-          await applyScale(scale)
-          if (!await frameAfterApply(current, scale))
-            break
-          continue
-        }
-
-        if (placed)
-          break
-
-        placed = true
+      if (!boundsOk) {
         await setBounds([target])
         await waitForStageSize(target.width, target.height)
         await wait(MODEL_SETTLE_DELAY)
