@@ -18,7 +18,7 @@ import { framesAgree, isArtWidthSaturated, scaleForMargins } from './stage-frame
  * the character is large enough, which is why the margins grow with the character
  * and the character may then take the whole room between them.
  */
-export const STAGE_FRAME_MARGINS: StageFrameMargins = { side: 10, top: 12, bottom: 6, sideShare: 0.04, topShare: 0.02 }
+export const STAGE_FRAME_MARGINS: StageFrameMargins = { side: 8, top: 10, bottom: 6, sideShare: 0.03, topShare: 0.02 }
 
 /** A resize settles before the character is re-measured; dragging emits many. */
 const RESIZE_DEBOUNCE = 120
