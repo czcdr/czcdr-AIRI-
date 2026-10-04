@@ -188,8 +188,14 @@ export async function setupMainWindow(params: {
     const x = Math.round(Math.min(Math.max(bounds.x, area.x), area.x + area.width - width))
     const y = Math.round(Math.min(Math.max(bounds.y, area.y), area.y + area.height - height))
 
-    if (x !== bounds.x || y !== bounds.y)
-      window.setBounds({ ...bounds, x, y, width: bounds.width, height: bounds.height })
+    // Only the position is set, and only when it is really off. Rounding the size
+    // back through setBounds looked harmless, but Electron adds a pixel to this
+    // frameless window on every setBounds, so each correction asked for the next
+    // one and a window parked at a screen corner grew a pixel every half second —
+    // and the character grew with it. setPosition does not touch the size, and the
+    // two-pixel threshold keeps a rounding difference from starting the same loop.
+    if (Math.abs(x - bounds.x) > 1 || Math.abs(y - bounds.y) > 1)
+      window.setPosition(x, y)
   }
 
   function scheduleKeepOnDisplay() {
